@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""
+🌌 NOKKA ETERNO v2.0 — Simulation Engine
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Motor de simulación de campo magnético 3D con auto-healing.
+Inspirado en datos ALMA y programación magnónica.
+
+Módulo standalone: sin dependencias de Flask.
+Se integra vía SocketIO desde app.py.
+"""
+
+import numpy as np
+import random
+import time
+import threading
+try:
+    import psutil
+except ImportError:
+    psutil = None
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+
+def _sanitize_for_json(obj):
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🎨 NOKKA COLORMAP: Negro → Cyan → Lima → Amarillo → Blanco
+# ═══════════════════════════════════════════════════════════════
+
+# Custom 5-color gradient with smooth interpolation stops
+PLASMA_STOPS = [
+    # ── Cyan oscuro (lowest intensity) ──
+    (0.00, 0.30, 0.28),
+    (0.00, 0.50, 0.45),
+    (0.00, 0.75, 0.65),
+    (0.00, 1.00, 0.83),
+    # ── Negro (transición baja) ──
+    (0.00, 0.50, 0.40),
+    (0.02, 0.15, 0.12),
+    (0.02, 0.02, 0.02),
+    # ── Amarillo ──
+    (0.40, 0.35, 0.00),
+    (0.80, 0.70, 0.00),
+    (1.00, 1.00, 0.00),
+    # ── Blanco ──
+    (1.00, 1.00, 0.50),
+    (1.00, 1.00, 0.85),
+    (1.00, 1.00, 1.00),
+    # ── Verde Lima (highest intensity) ──
+    (0.50, 1.00, 0.30),
+    (0.22, 1.00, 0.08),
+]
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def plasma_color(value: float, vmin: float = -1.5, vmax: float = 1.5) -> Tuple[float, float, float]:
+    """Map a scalar value to an RGB tuple using the plasma colormap."""
+    t = max(0.0, min(1.0, (value - vmin) / (vmax - vmin)))
+    idx = t * (len(PLASMA_STOPS) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(PLASMA_STOPS) - 1)
+    frac = idx - lo
+    r = _lerp(PLASMA_STOPS[lo][0], PLASMA_STOPS[hi][0], frac)
+    g = _lerp(PLASMA_STOPS[lo][1], PLASMA_STOPS[hi][1], frac)
+    b = _lerp(PLASMA_STOPS[lo][2], PLASMA_STOPS[hi][2], frac)
+    return (r, g, b)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🧲 NOKKA SIMULATION CORE
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class SimulationConfig:
+    """Immutable configuration for a NOKKA simulation."""
+    grid_size: int = 12
+    wave_speed: float = 0.15
+    noise_std: float = 0.08
+    damage_probability: float = 0.03
+    healing_passes: int = 3
+    quiver_step: int = 2
+    vmin: float = -1.5
+    vmax: float = 1.5
+
+
+class NokkaSimulation:
+    """
+    3D Magnetic Field Simulation with Self-Healing.
+
+    The simulation manages:
+    - A 3D scalar field (intensity) evolving via trigonometric waves + noise
+    - A boolean mask of active/damaged sensors
+    - An auto-healing mechanism (neighbor averaging)
+    - Quiver vectors representing the magnetic field direction
+
+    All state is serializable to a dict for WebSocket streaming.
+    """
+
+    def __init__(self, config: Optional[SimulationConfig] = None):
+        self.config = config or SimulationConfig()
+        self._frame = 0
+        self._running = False
+        self._healed_this_frame = False
+        self._lock = threading.Lock()
+
+        # Stats
+        self._total_damage_events = 0
+        self._total_heal_events = 0
+
+        # Performance timing
+        self._last_step_ms = 0.0
+        self._last_serialize_ms = 0.0
+        self._last_payload_bytes = 0
+        self._cumulative_ops = 0  # total numpy ops counter
+
+        self._init_simulation()
+
+    def _init_simulation(self):
+        """Initialize simulation arrays from current config."""
+        N = self.config.grid_size
+
+        # Scalar field & sensor mask
+        self._grid = np.zeros((N, N, N), dtype=np.float32)
+        self._sensors_active = np.ones((N, N, N), dtype=bool)
+
+        # Phase accumulator for wave evolution
+        self._phase = np.random.rand(N, N, N).astype(np.float32) * 2.0 * np.pi
+
+        # Pre-compute coordinate meshgrids (memory-efficient float32)
+        self._x, self._y, self._z = np.meshgrid(
+            np.arange(N, dtype=np.float32),
+            np.arange(N, dtype=np.float32),
+            np.arange(N, dtype=np.float32),
+            indexing='ij'
+        )
+
+        # Pre-compute quiver grid coordinates
+        qs = self.config.quiver_step
+        self._qx, self._qy, self._qz = np.meshgrid(
+            np.arange(0, N, qs, dtype=np.float32),
+            np.arange(0, N, qs, dtype=np.float32),
+            np.arange(0, N, qs, dtype=np.float32),
+            indexing='ij'
+        )
+
+        # Performance timing
+        self._last_step_ms = 0.0
+        self._last_serialize_ms = 0.0
+        self._last_payload_bytes = 0
+        self._cumulative_ops = 0  # total numpy ops counter
+
+    # ─── Core Simulation Step ────────────────────────────────
+
+    def step(self) -> dict:
+        """Advance one frame and return the full renderable state."""
+        with self._lock:
+            t0 = time.perf_counter()
+
+            self._frame += 1
+            self._healed_this_frame = False
+
+            self._evolve_field()
+            self._apply_damage()
+            self._apply_healing()
+
+            t1 = time.perf_counter()
+            self._last_step_ms = (t1 - t0) * 1000.0
+
+            state = self.get_state()
+
+            t2 = time.perf_counter()
+            self._last_serialize_ms = (t2 - t1) * 1000.0
+
+            return state
+
+    def _evolve_field(self):
+        """Update the scalar field with wave propagation + Gaussian noise."""
+        cfg = self.config
+        N = cfg.grid_size
+        n3 = N * N * N
+        self._phase += cfg.wave_speed
+
+        self._grid = (
+            0.8 * np.sin(self._x * 0.6 + self._phase)
+                * np.cos(self._y * 0.4 + self._phase * 0.7)
+            + 0.3 * np.sin(self._z * 1.1 + self._frame * 0.08)
+            + np.random.normal(0, cfg.noise_std, self._grid.shape).astype(np.float32)
+        )
+
+        # Count operations: 3 sin/cos evals per voxel + 1 random + ~8 arithmetic = ~12 FLOPs/voxel
+        self._cumulative_ops += n3 * 12
+
+    def _apply_damage(self):
+        """Stochastic sensor failure (natural degradation)."""
+        if np.random.rand() < self.config.damage_probability:
+            N = self.config.grid_size
+            dx, dy, dz = (random.randint(0, N - 1) for _ in range(3))
+            self._sensors_active[dx, dy, dz] = False
+            self._grid[dx, dy, dz] *= 0.1
+            self._total_damage_events += 1
+
+    def _apply_healing(self):
+        """Vectorized healing: average from active neighbors using rolls."""
+        if np.all(self._sensors_active):
+            return  # Nothing to heal
+
+        N = self.config.grid_size
+        damaged_mask = ~self._sensors_active
+
+        # 6 directions as roll shifts
+        directions = [
+            (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0),
+            (0, 0, 1), (0, 0, -1)
+        ]
+
+        healed_this_pass_total = 0
+
+        for _ in range(self.config.healing_passes):
+            if not np.any(damaged_mask):
+                break
+
+            neighbor_sum = np.zeros_like(self._grid)
+            neighbor_count = np.zeros_like(self._grid, dtype=int)
+
+            for shift in directions:
+                # Roll grid and active mask
+                shifted_grid = np.roll(self._grid, shift, axis=(0,1,2))
+                shifted_active = np.roll(self._sensors_active, shift, axis=(0,1,2))
+
+                # Only add where neighbor is active AND current is damaged
+                valid = shifted_active & damaged_mask
+                neighbor_sum[valid] += shifted_grid[valid]
+                neighbor_count[valid] += 1
+
+            # Where we can heal (at least 1 neighbor)
+            can_heal = (neighbor_count > 0) & damaged_mask
+
+            if np.any(can_heal):
+                # Average only where possible
+                self._grid[can_heal] = neighbor_sum[can_heal] / neighbor_count[can_heal]
+                self._sensors_active[can_heal] = True
+                healed_count = np.sum(can_heal)
+                self._total_heal_events += healed_count
+                healed_this_pass_total += healed_count
+                # Update mask for next pass
+                damaged_mask[can_heal] = False
+
+        if healed_this_pass_total > 0:
+            self._healed_this_frame = True
+
+    # ─── User Actions ────────────────────────────────────────
+
+    def inject_damage(self, count: int = 20):
+        """Inject a burst of random sensor failures."""
+        N = self.config.grid_size
+        for _ in range(count):
+            dx, dy, dz = (random.randint(0, N - 1) for _ in range(3))
+            self._sensors_active[dx, dy, dz] = False
+            self._grid[dx, dy, dz] *= 0.05
+            self._total_damage_events += 1
+
+    def force_heal(self):
+        """Force-heal ALL damaged sensors with many propagation passes."""
+        N = self.config.grid_size
+        original_damaged = np.sum(~self._sensors_active)
+        if original_damaged == 0:
+            return
+
+        # Use more passes to ensure full propagation (like a flood fill)
+        max_passes = N * 3  # worst case diameter ~ N√3
+        directions = [
+            (1, 0, 0), (-1, 0, 0),
+            (0, 1, 0), (0, -1, 0),
+            (0, 0, 1), (0, 0, -1)
+        ]
+
+        healed_total = 0
+        for _ in range(max_passes):
+            damaged_mask = ~self._sensors_active
+            if not np.any(damaged_mask):
+                break
+
+            neighbor_sum = np.zeros_like(self._grid)
+            neighbor_count = np.zeros_like(self._grid, dtype=int)
+
+            for shift in directions:
+                shifted_grid = np.roll(self._grid, shift, axis=(0,1,2))
+                shifted_active = np.roll(self._sensors_active, shift, axis=(0,1,2))
+                valid = shifted_active & damaged_mask
+                neighbor_sum[valid] += shifted_grid[valid]
+                neighbor_count[valid] += 1
+
+            can_heal = (neighbor_count > 0) & damaged_mask
+
+            if np.any(can_heal):
+                self._grid[can_heal] = neighbor_sum[can_heal] / neighbor_count[can_heal]
+                self._sensors_active[can_heal] = True
+                healed_count = np.sum(can_heal)
+                healed_total += healed_count
+                self._total_heal_events += healed_count
+
+        if healed_total > 0:
+            self._healed_this_frame = True
+
+    def reboot_wave(self):
+        """Reset phase with new random seed — strong wave reboot."""
+        self._phase = np.random.rand(*self._phase.shape).astype(np.float32) * 2.0 * np.pi
+        self._sensors_active[:] = True
+        self._total_damage_events = 0
+        self._total_heal_events = 0
+
+    # ─── State Serialization ─────────────────────────────────
+
+    def get_state(self) -> dict:
+        """
+        Return the full simulation state as a JSON-serializable dict.
+
+        Structure:
+        {
+            "frame": int,
+            "sensors": { "positions": [[x,y,z],...], "colors": [[r,g,b],...] },
+            "quiver": { "positions": [[x,y,z],...], "directions": [[ux,uy,uz],...] },
+            "stats": { ... },
+            "status": "HEALING ACTIVADO" | "PROCESANDO GALÁCTICO"
+        }
+        """
+        cfg = self.config
+
+        # ── Active sensor positions & colors ──
+        active_idx = np.argwhere(self._sensors_active)
+        values = self._grid[self._sensors_active]
+
+        # Compute colors via plasma colormap (vectorized)
+        t = np.clip((values - cfg.vmin) / (cfg.vmax - cfg.vmin), 0.0, 1.0)
+        idx_f = t * (len(PLASMA_STOPS) - 1)
+        lo = np.floor(idx_f).astype(int)
+        hi = np.minimum(lo + 1, len(PLASMA_STOPS) - 1)
+        frac = idx_f - lo
+
+        stops = np.array(PLASMA_STOPS, dtype=np.float32)
+        colors = stops[lo] + (stops[hi] - stops[lo]) * frac[:, np.newaxis]
+
+        # ── Quiver vectors ──
+        f = self._frame
+        ux = np.sin(f * 0.1 + self._qx * 0.5) * 0.6
+        uy = np.cos(f * 0.12 + self._qy * 0.4) * 0.6
+        uz = np.sin(f * 0.08 + self._qz * 0.7) * 0.6
+
+        q_pos = np.stack([self._qx, self._qy, self._qz], axis=-1).reshape(-1, 3)
+        q_dir = np.stack([ux, uy, uz], axis=-1).reshape(-1, 3)
+
+        # ── Build response ──
+        N = cfg.grid_size
+        total_sensors = N * N * N
+        active_count = int(np.sum(self._sensors_active))
+
+        # Quiver ops: 3 trig evals * quiver_count
+        quiver_count = len(q_pos)
+        self._cumulative_ops += quiver_count * 6  # sin/cos + arithmetic
+
+        # Colormap ops: ~5 per active sensor (clip, scale, lerp)
+        self._cumulative_ops += active_count * 5
+
+        # Compute estimated FLOPS
+        total_step_sec = (self._last_step_ms + self._last_serialize_ms) / 1000.0
+        est_flops = (total_sensors * 12 + quiver_count * 6 + active_count * 5) / max(total_step_sec, 1e-9)
+
+        result = {
+            "frame": int(self._frame),
+            "gridSize": int(N),
+            "sensors": {
+                "positions": active_idx.tolist(),
+                "colors": np.round(colors, 3).tolist(),
+            },
+            "quiver": {
+                "positions": q_pos.tolist(),
+                "directions": np.round(q_dir, 3).tolist(),
+            },
+            "stats": {
+                "totalSensors": int(total_sensors),
+                "activeSensors": int(active_count),
+                "damagedSensors": int(total_sensors - active_count),
+                "totalDamageEvents": int(self._total_damage_events),
+                "totalHealEvents": int(self._total_heal_events),
+                "fieldMean": float(np.mean(self._grid)),
+                "fieldStd": float(np.std(self._grid)),
+            },
+            "compute": {
+                "stepMs": float(round(self._last_step_ms, 2)),
+                "serializeMs": float(round(self._last_serialize_ms, 2)),
+                "totalMs": float(round(self._last_step_ms + self._last_serialize_ms, 2)),
+                "estFLOPS": int(round(est_flops)),
+                "cumulativeOps": int(self._cumulative_ops),
+                "opsPerFrame": int(total_sensors * 12 + quiver_count * 6 + active_count * 5),
+                "fieldEvals": int(total_sensors * 3),
+                "neighborLookups": int(np.sum(~self._sensors_active)) * 6,
+                "colormapCalcs": int(active_count * 3),
+                "quiverCalcs": int(quiver_count * 3),
+            },
+            "consumo": {
+                "energy_nw": float(round(self._cumulative_ops * 0.0000001, 4)),
+                "load_pct": float(round(min(100, (est_flops / 500000.0) * 100), 1)),
+                "field_stress": float(round(np.sum(~self._sensors_active) * 1.5 + np.mean(np.abs(self._grid)) * 10, 2)),
+                "sync_level": "OPTIMAL" if active_count / total_sensors > 0.9 else "DEGRADED",
+                "cpu_usage": psutil.cpu_percent() if psutil else float(round(min(100, (est_flops / 1000000.0) * 80), 1)),
+                "ram_usage": psutil.virtual_memory().percent if psutil else 42.5,
+                "gpu_load": float(round(min(100, (total_sensors / 32768.0) * 90 + random.uniform(0, 5)), 1))
+            },
+            "status": "HEALING ACTIVADO" if self._healed_this_frame else "PROCESANDO GALÁCTICO",
+        }
+
+        return _sanitize_for_json(result)
+
+    def update_config(self, new_config: dict):
+        """Update simulation configuration in real-time."""
+        with self._lock:
+            old_grid_size = self.config.grid_size
+            
+            if "grid_size" in new_config:
+                self.config.grid_size = int(new_config["grid_size"])
+            if "wave_speed" in new_config:
+                self.config.wave_speed = float(new_config["wave_speed"])
+            if "noise_level" in new_config:
+                self.config.noise_level = float(new_config["noise_level"])
+                
+            # Re-initialize if grid size changed
+            if self.config.grid_size != old_grid_size:
+                self._init_simulation()
+                print(f"🌌 NOKKA: Grid resized to {self.config.grid_size}x{self.config.grid_size}x{self.config.grid_size}")
+
+    # ─── Properties ──────────────────────────────────────────
+
+    @property
+    def frame(self) -> int:
+        return self._frame
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @is_running.setter
+    def is_running(self, value: bool):
+        self._running = value

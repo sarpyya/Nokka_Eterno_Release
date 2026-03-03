@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOKKA ETERNO v2.1 — Campo Magnético 3D + Compute Metrics</title>
+    <meta name="description"
+        content="Visualización interactiva 3D de campo magnético con auto-healing, bloom post-processing, y métricas de cómputo en tiempo real.">
+    <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Outfit:wght@300;400;600;800&family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400;700&display=swap">
+    <link rel="stylesheet" href="/static/css/nokka_eterno.css">
+    <link rel="icon" href="/favicon.ico">
+</head>
+
+<body class="nokka-body">
+
+    <!-- ── Loading Screen ── -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">INICIALIZANDO CAMPO MAGNÉTICO...</div>
+    </div>
+
+    <!-- ── Background ── -->
+    <div class="starfield"></div>
+
+    <!-- ── Canvases ── -->
+    <canvas id="nokka-canvas"></canvas>
+    <canvas id="nokka-canvas-2d" style="display:none"></canvas>
+
+    <!-- ── Event Flash Overlay ── -->
+    <div class="event-flash" id="event-flash"></div>
+
+    <!-- ── Toast Container ── -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- ── Main HUD Grid ── -->
+    <div class="hud-grid">
+        <!-- ── Top Header ── -->
+        <header class="main-header glass-panel">
+            <div class="header-left">
+                <span class="logo">NOKKA <span class="cyan">ETERNO</span></span>
+                <span class="version">v2.5</span>
+            </div>
+            <div class="header-center">
+                <span class="global-status" id="global-status">SISTEMA NOMINAL</span>
+                <span class="frame-counter" id="frame-counter">F0000</span>
+            </div>
+            <div class="header-right">
+                <div class="mode-selector">
+                    <button class="mode-btn active" id="mode-3d">🧊 3D</button>
+                    <button class="mode-btn" id="mode-2d">🖥️ 2D</button>
+                </div>
+                <span class="hw-detect" id="hw-detect">🖥️ Detectando Hardware...</span>
+            </div>
+        </header>
+
+        <!-- ── Sidebar Left (Stats) ── -->
+        <aside class="sidebar sidebar-left">
+            <!-- Telemetría -->
+            <div class="stats-panel glass-panel">
+                <h3>📡 TELEMETRÍA</h3>
+                <div class="stat-row">
+                    <span class="stat-label">Frame</span>
+                    <span class="stat-value cyan" id="stat-frame">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Sensores Activos</span>
+                    <span class="stat-value heal" id="stat-active">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Dañados</span>
+                    <span class="stat-value damage" id="stat-damaged">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Heal Events</span>
+                    <span class="stat-value heal" id="stat-healed">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Damage Events</span>
+                    <span class="stat-value damage" id="stat-dmg-events">0</span>
+                </div>
+                <div class="health-bar-container">
+                    <div class="health-bar-fill" id="health-bar-fill" style="width: 100%"></div>
+                </div>
+            </div>
+
+            <!-- Cómputo -->
+            <div class="compute-panel glass-panel">
+                <h3>⚡ CÓMPUTO</h3>
+                <div class="compute-grid">
+                    <div class="cmp-block">
+                        <div class="cmp-value cyan" id="cmp-step-ms">0.0</div>
+                        <div class="cmp-label">Step</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value cyan" id="cmp-serialize-ms">0.0</div>
+                        <div class="cmp-label">Serial</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value" id="cmp-total-ms">0.0</div>
+                        <div class="cmp-label">Total</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value heal" id="cmp-fps">0</div>
+                        <div class="cmp-label">FPS</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value amber" id="cmp-flops">0</div>
+                        <div class="cmp-label">FLOPS</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value amber" id="cmp-ops-frame">0</div>
+                        <div class="cmp-label">Ops/F</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value magenta" id="cmp-throughput">0</div>
+                        <div class="cmp-label">Ops/S</div>
+                    </div>
+                    <div class="cmp-block">
+                        <div class="cmp-value magenta" id="cmp-bandwidth">0</div>
+                        <div class="cmp-label">BW</div>
+                    </div>
+                </div>
+                <div class="cmp-ticker">
+                    <span class="cmp-ticker-label">Total Cumulative Ops</span>
+                    <span class="cmp-ticker-value" id="cmp-cumulative">0</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ── Main Viewport ── -->
+        <main class="viewport">
+            <!-- Canvases are already in the root, we might want to keep them behind or inside here. 
+                 For now, let's keep them absolute but centered in the perspective. -->
+             <div class="viewport-overlay">
+                 <div class="status-banner status-idle" id="status-banner">ESPERANDO INICIO...</div>
+             </div>
+        </main>
+
+        <!-- ── Sidebar Right (Command) ── -->
+        <aside class="sidebar sidebar-right">
+            <!-- Controles -->
+            <div class="controls-panel glass-panel">
+                <h3>🕹️ CONTROLES</h3>
+                <div class="controls-content">
+                    <button class="nokka-btn btn-start" id="btn-start">
+                        <span>▶ Iniciar Simulación</span>
+                        <span class="key-hint">S</span>
+                    </button>
+                    <button class="nokka-btn btn-stop" id="btn-stop" style="display:none">
+                        <span>⏸ Pausar</span>
+                        <span class="key-hint">S</span>
+                    </button>
+                    
+                    <div class="config-divider">🕸️ CAZADOR DE SOMBRAS</div>
+                    <div class="hunter-input">
+                        <input type="text" id="hunter-target" placeholder="@usuario_x" class="nokka-input" autocomplete="off">
+                        <button class="nokka-btn btn-hunt" id="btn-hunt">🔎 Escanear</button>
+                    </div>
+
+                    <div class="config-divider">⚙ PARÁMETROS 12D</div>
+                    
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="slider-label">Malla (N)</span>
+                            <span class="slider-value" id="val-grid">?</span>
+                        </div>
+                        <input type="range" id="sld-grid" min="6" max="24" value="12" step="1" class="nokka-slider">
+                    </div>
+
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="slider-label">Velocidad</span>
+                            <span class="slider-value" id="val-speed">?</span>
+                        </div>
+                        <input type="range" id="sld-speed" min="0.05" max="0.5" value="0.15" step="0.01" class="nokka-slider">
+                    </div>
+
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="slider-label">Ruido</span>
+                            <span class="slider-value" id="val-noise">?</span>
+                        </div>
+                        <input type="range" id="sld-noise" min="0" max="0.3" value="0.08" step="0.01" class="nokka-slider">
+                    </div>
+
+                    <div class="btn-group-dual">
+                        <button class="nokka-btn btn-damage" id="btn-damage">💥 Daño [SPC]</button>
+                        <button class="nokka-btn btn-heal" id="btn-heal">💚 Heal [H]</button>
+                    </div>
+                    <button class="nokka-btn btn-reboot" id="btn-reboot">🔄 Reboot [P]</button>
+                </div>
+            </div>
+
+            <!-- Consumo -->
+            <div class="consumption-panel glass-panel">
+                <h3>⚡ CONSUMO</h3>
+                <div class="stat-row">
+                    <span class="stat-label">Energía (nW)</span>
+                    <span class="stat-value cyan" id="con-energy">0</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Carga Link</span>
+                    <span class="stat-value" id="con-load">0%</span>
+                </div>
+                <div class="energy-graph">
+                    <div class="energy-bar" id="energy-bar"></div>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">💻 CPU Usage</span>
+                    <span class="stat-value" id="con-cpu">0%</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">🧠 RAM Active</span>
+                    <span class="stat-value" id="con-ram">0%</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">🎮 GPU Load</span>
+                    <span class="stat-value magenta" id="con-gpu">0%</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Sync 9D</span>
+                    <span class="stat-value heal" id="con-sync">OK</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Estrés</span>
+                    <span class="stat-value damage" id="con-stress">0</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ── Footer ── -->
+        <footer class="main-footer glass-panel">
+            <div class="footer-shortcuts">
+                <kbd>S</kbd> Start/Stop  |  <kbd>SPACE</kbd> Daño  |  <kbd>H</kbd> Heal  |  <kbd>P</kbd> Reboot
+            </div>
+            <div class="footer-meta">
+                Protocolo NEWEN v12D - AISEC Solutions 2026
+            </div>
+        </footer>
+    </div>    
+
+    <!-- ── Dependencies (CDN) ── -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Post-processing (Bloom) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+    <!-- SocketIO -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <!-- App -->
+    <script src="/static/js/nokka_eterno.js"></script>
+
+</body>
+
+</html>
