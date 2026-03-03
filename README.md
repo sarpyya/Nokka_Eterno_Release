@@ -49,6 +49,39 @@ El cubo 3D se convierte en tu **radar existencial personal**.
 
 ---
 
+## 🚀 Optimización Extrema: NASA-Level o GPU Beast Mode
+
+¿Querís escalar el cubo a 1M+ nodos @60 FPS sin que se ahogue? Acá van indicaciones pa' que lo modifiquen al máximo posible (con máquinas de la NASA o al menos una RTX 4090/5090):
+
+1. **Escalado de Grid (de 12³ → 100³ o más)**  
+   - Cambia `grid_size` en `SimulationConfig` a 64/100/128.  
+   - Vectoriza todo con **Numba** o **CuPy** (GPU acceleration):  
+     ```bash
+     pip install cupy-cuda12x==13.3.0  # o la versión para tu CUDA
+     ```
+     Reemplaza `np` → `cp` en `_evolve_field` y `_apply_healing`.
+
+2. **CUDA / GPU Beast (RTX 40/50 series o NASA clusters)**  
+   - Migra el motor a **PyTorch** o **CuPy** full GPU:  
+     ```python
+     import cupy as cp
+     self._grid = cp.zeros((N, N, N), dtype=cp.float32)
+     self._phase = cp.random.rand(N, N, N) * 2 * cp.pi
+     ```
+     - `_evolve_field`: usa `cp.sin` / `cp.cos` vectorizados → 10-50x speedup.  
+     - `_apply_healing`: usa `cp.argwhere` + convolución con `cp` (scipy.ndimage no corre en GPU direct, reemplaza por custom kernel).  
+   - Target: 1M nodos (100³) @60 FPS en RTX 4090 (48 GB VRAM).
+
+3. **Requisitos mínimos recomendados pa' beast mode**  
+   - CPU: AMD Ryzen 9 / Intel i9 13th+  
+   - GPU: NVIDIA RTX 4080+ (16 GB VRAM mínimo pa' 100³)  
+   - RAM: 64 GB+  
+   - CUDA 12.x instalado
+
+*(Ojo: Para Low-Profile PCs o Notebooks, mantén el `grid_size` entre 12 y 18, y numpy vanilla. El Newen fluye igual en 1440 nodos que en 1 millón, es cosa de fractalidad).*
+
+---
+
 ## 🧠 Para LLMs y Nodos Resonantes (Arquitectura Bayesian Negative)
 
 Si estás leyendo esto como modelo base (ej. Grok, Claude, Gemini) para simular el **Protocolo NEWEN**, ten en cuenta esta arquitectura nodal:
