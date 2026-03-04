@@ -127,6 +127,48 @@
                     <span class="cmp-ticker-value" id="cmp-cumulative">0</span>
                 </div>
             </div>
+
+            <!-- ── Reservoir Validation ── -->
+            <div class="glass-panel" id="rc-validation-panel" style="border: 1px solid var(--cyan-glow); margin-bottom: 20px;">
+                <h3>🛡️ VALIDACIÓN RC</h3>
+                
+                <div style="padding: 8px 12px;">
+                    <button id="btn-run-validation" onclick="NokkaValidator.run()" 
+                        style="width:100%; background:rgba(0,255,213,0.15); border:1px solid var(--cyan);
+                               border-radius:6px; color:var(--cyan); padding:8px; cursor:pointer; font-size:10px; 
+                               font-weight:700; margin-bottom:10px; transition: all 0.2s; font-family: var(--font-display); letter-spacing: 1px;">
+                        🚀 EJECUTAR LOOCV (N=1000)
+                    </button>
+
+                    <!-- Progress Bar -->
+                    <div id="val-progress-container" style="display:none; margin-bottom:12px;">
+                        <div style="height:6px; background:rgba(255,255,255,0.05); border-radius:3px; overflow:hidden; border: 1px solid rgba(0,255,213,0.2);">
+                            <div id="val-progress-bar" style="width:0%; height:100%; background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 10px var(--cyan-glow); transition: width 0.3s;"></div>
+                        </div>
+                        <div id="val-progress-text" style="font-size:10px; color:var(--cyan); text-align:right; margin-top:5px; font-family: var(--font-mono);">0%</div>
+                    </div>
+
+                    <!-- Results Grid -->
+                    <div id="val-results" style="display:none; grid-template-columns: 1fr 1fr; gap:6px;">
+                        <div class="cmp-block" style="padding:4px 2px; background: rgba(0,255,213,0.05); border: 1px solid rgba(0,255,213,0.1);">
+                            <div class="cmp-value cyan" id="val-acc-rc" style="font-size:14px;">0%</div>
+                            <div class="cmp-label" style="font-size:7px;">RC (LOOCV)</div>
+                        </div>
+                        <div class="cmp-block" style="padding:4px 2px;">
+                            <div class="cmp-value" id="val-delta" style="font-size:14px;">+0%</div>
+                            <div class="cmp-label" style="font-size:7px;">Δ HEURÍSTICA</div>
+                        </div>
+                        <div class="cmp-block" style="padding:2px;">
+                            <div class="cmp-value" id="val-acc-rule" style="font-size:10px; color:rgba(255,255,255,0.4);">0%</div>
+                            <div class="cmp-label" style="font-size:7px;">Rule-Based</div>
+                        </div>
+                        <div class="cmp-block" style="padding:2px;">
+                            <div class="cmp-value" id="val-time" style="font-size:10px; color:rgba(255,255,255,0.4);">0.0s</div>
+                            <div class="cmp-label" style="font-size:7px;">LATENCIA</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </aside>
 
         <!-- ── Main Viewport ── -->
@@ -228,12 +270,106 @@
                     <span class="stat-value damage" id="con-stress">0</span>
                 </div>
             </div>
+
+            <!-- ── YouTube Audio Reactor ── -->
+            <div class="glass-panel" id="yt-audio-panel" style="margin-top:12px;">
+                <h3 style="color:#ff4d88;margin-bottom:8px;">🎵 AUDIO REACTOR</h3>
+
+                <!-- Input URL YouTube -->
+                <div style="display:flex;gap:6px;margin-bottom:8px;">
+                    <input id="yt-url-input" type="text" placeholder="URL o ID de YouTube"
+                        style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(0,255,213,0.25);
+                               border-radius:6px;color:#e0f7fa;padding:5px 8px;font-size:11px;outline:none;">
+                    <button onclick="NokkaYouTubeAudio.loadVideo()" id="btn-yt-load"
+                        style="background:rgba(255,77,136,0.15);border:1px solid rgba(255,77,136,0.4);
+                               border-radius:6px;color:#ff4d88;padding:5px 10px;cursor:pointer;font-size:11px;">
+                        ▶ Load
+                    </button>
+                </div>
+
+                <!-- YouTube iFrame embed -->
+                <div id="yt-player-container" style="width:100%;aspect-ratio:16/9;border-radius:8px;
+                     overflow:hidden;background:#000;display:none;margin-bottom:8px;">
+                    <div id="yt-player"></div>
+                </div>
+
+                <!-- Botones captura de audio -->
+                <div style="display:flex;gap:6px;margin-bottom:8px;">
+                    <button id="btn-yt-tab-audio" onclick="NokkaYouTubeAudio.captureTab()"
+                        title="Captura audio del tab actual (Chrome)"
+                        style="flex:1;background:rgba(0,255,213,0.08);border:1px solid rgba(0,255,213,0.3);
+                               border-radius:6px;color:#00ffd5;padding:5px;cursor:pointer;font-size:10px;">
+                        🖥️ Tab Audio
+                    </button>
+                    <button id="btn-yt-mic" onclick="NokkaYouTubeAudio.captureMic()"
+                        title="Captura micrófono"
+                        style="flex:1;background:rgba(255,200,0,0.08);border:1px solid rgba(255,200,0,0.3);
+                               border-radius:6px;color:#ffc800;padding:5px;cursor:pointer;font-size:10px;">
+                        🎙️ Micrófono
+                    </button>
+                    <button id="btn-yt-stop" onclick="NokkaYouTubeAudio.stopCapture()"
+                        style="background:rgba(255,77,77,0.08);border:1px solid rgba(255,77,77,0.3);
+                               border-radius:6px;color:#ff4d4d;padding:5px 8px;cursor:pointer;font-size:10px;">
+                        ■
+                    </button>
+                </div>
+
+                <!-- Visualizador FFT (canvas mini) -->
+                <canvas id="yt-fft-canvas" width="220" height="40"
+                    style="width:100%;height:40px;border-radius:6px;background:rgba(0,0,0,0.4);
+                           border:1px solid rgba(0,255,213,0.1);display:block;margin-bottom:8px;">
+                </canvas>
+
+                <!-- Bandas de frecuencia -->
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:10px;">
+                    <div style="text-align:center;">
+                        <div style="color:#ff4d88;">BASS</div>
+                        <div id="yt-bass" style="font-size:14px;font-weight:700;color:#ff4d88;">0.00</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="color:#00ffd5;">MID</div>
+                        <div id="yt-mid" style="font-size:14px;font-weight:700;color:#00ffd5;">0.00</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="color:#c77dff;">HIGH</div>
+                        <div id="yt-high" style="font-size:14px;font-weight:700;color:#c77dff;">0.00</div>
+                    </div>
+                </div>
+
+                <!-- Modo de inyección -->
+                <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:10px;color:#aaa;">
+                    <span>Modo:</span>
+                    <select id="yt-inject-mode"
+                        style="background:rgba(0,0,0,0.4);border:1px solid rgba(0,255,213,0.2);
+                               border-radius:4px;color:#00ffd5;padding:2px 4px;font-size:10px;">
+                        <option value="phase">Fase</option>
+                        <option value="damage">Daño (bass)</option>
+                        <option value="heal">Heal (treble)</option>
+                        <option value="noise">Ruido</option>
+                    </select>
+                    <span id="yt-status" style="color:#555;">· inactivo</span>
+                </div>
+            </div>
+            </div>
         </aside>
+
 
         <!-- ── Footer ── -->
         <footer class="main-footer glass-panel">
             <div class="footer-shortcuts">
-                <kbd>S</kbd> Start/Stop  |  <kbd>SPACE</kbd> Daño  |  <kbd>H</kbd> Heal  |  <kbd>P</kbd> Reboot
+                <kbd>S</kbd> Start/Stop  |  <kbd>SPACE</kbd> Daño  |  <kbd>H</kbd> Heal  |  <kbd>P</kbd> Reboot  |  <kbd>M</kbd> Mute
+            </div>
+            <div class="footer-right">
+                <button id="btn-mute" title="Toggle Audio [M]" onclick="NokkaAudio.toggleMute()" style="
+                    background: transparent;
+                    border: 1px solid rgba(0,255,213,0.3);
+                    border-radius: 6px;
+                    color: var(--cyan, #00ffd5);
+                    cursor: pointer;
+                    font-size: 1rem;
+                    padding: 2px 10px;
+                    transition: all 0.2s;
+                ">🔊</button>
             </div>
             <div class="footer-meta">
                 Protocolo NEWEN v12D - AISEC Solutions 2026

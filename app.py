@@ -10,12 +10,20 @@ from flask_cors import CORS
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from engines.nokka_eterno import NokkaSimulation, SimulationConfig
+from engines.nokka_validator import run_rc_validation
 
 # ─────────────────────────────────────────────
 # INICIALIZACIÓN FLASK
 # ─────────────────────────────────────────────
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'nokka-eterno-standalone-secret'
+
+# Cargar configuración desde entorno para mayor seguridad en GitHub
+from dotenv import load_dotenv
+load_dotenv()
+
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'nokka-eterno-fallback-secret-2026')
+DEBUG_MODE = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
+
 CORS(app)
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -42,6 +50,57 @@ try:
 except ImportError as e:
     print(f"⚠️ [BotHunter] No se pudo cargar: {e}")
     _bot_hunter = None
+
+# ─────────────────────────────────────────────
+# REDIS CACHE (opcional — Fase 1 Plan Mem0)
+# ─────────────────────────────────────────────
+_redis = None
+try:
+    import redis as _redis_lib
+    import time as _t
+
+    _redis_host = os.getenv("REDIS_HOST", "localhost")
+    _redis_port = int(os.getenv("REDIS_PORT", 6379))
+
+    _redis_client = _redis_lib.Redis(
+        host=_redis_host,
+        port=_redis_port,
+        decode_responses=True,
+        socket_connect_timeout=1,   # no bloquear más de 1s en boot
+        socket_timeout=1
+    )
+
+    _t0 = _t.perf_counter()
+    _pong = _redis_client.ping()
+    _ping_ms = (_t.perf_counter() - _t0) * 1000
+
+    if _pong:
+        if _ping_ms > 500:
+            # Latencia tan alta que el cache empeoraría el rendimiento
+            print(f"🔴 [Redis] Conectado pero latencia CRÍTICA ({_ping_ms:.0f}ms) — "
+                  f"demasiado lenta para cache RT. Cache desactivado.")
+            print("   💡 Tip: Instala Redis nativo en Windows (no WSL) o usa "
+                  "'redis-server' en localhost puro.")
+            _redis = None
+        elif _ping_ms > 50:
+            # Cache activo pero con advertencia
+            _redis = _redis_client
+            print(f"🟡 [Redis] Conectado → {_redis_host}:{_redis_port} "
+                  f"| PING: {_ping_ms:.1f}ms — latencia ALTA para RT (ideal: <5ms).")
+            print("   💡 Tip: Redis puede estar en WSL. Prueba 'redis-server' nativo.")
+        else:
+            _redis = _redis_client
+            print(f"🗄️  [Redis] Conectado → {_redis_host}:{_redis_port} "
+                  f"| PING: {_ping_ms:.1f}ms ✅ | Cache RT activo.")
+    else:
+        print(f"⚠️  [Redis] PING fallido — cache RT desactivado.")
+
+except ImportError:
+    print("⚠️  [Redis] Librería no instalada (pip install redis). "
+          "Cache RT desactivado — sin impacto en simulación.")
+except Exception as e:
+    print(f"⚠️  [Redis] No disponible ({type(e).__name__}: {e}). "
+          "Cache RT desactivado — sin impacto en simulación.")
 
 # ─────────────────────────────────────────────
 # BUCLE DE SIMULACIÓN
@@ -194,7 +253,49 @@ def handle_update_config(data):
     except Exception as e:
         print(f"❌ [Nokka] Error en handle_update_config: {e}")
 
+# ── Audio Inject (YouTube Reactor) ────────
+@socketio.on('nokka_audio_inject')
+def handle_audio_inject(data):
+    """Recibe análisis FFT del browser y modula el campo según el modo."""
+    try:
+        if not data or not _nokka_sim.is_running:
+            return
+
+        bass   = float(data.get('bass',   0.0))
+        mid    = float(data.get('mid',    0.0))
+        high   = float(data.get('high',   0.0))
+        energy = float(data.get('energy', 0.0))
+        mode   = str(data.get('mode', 'phase'))
+
+        if mode == 'phase':
+            # Mid modula wave_speed levemente ±0.1 sobre la base
+            _nokka_sim.config.wave_speed = 0.08 + mid * 0.25
+            # Bass empuja ruido
+            _nokka_sim.config.noise_std  = 0.04 + bass * 0.18
+
+        elif mode == 'damage':
+            # Bass fuerte → inject_damage proporcional (max 8 nodos/tick)
+            if bass > 0.40:
+                count = max(1, int(bass * 8))
+                _nokka_sim.inject_damage(count)
+                print(f"🎵 [AudioReactor] DAMAGE mode: bass={bass:.2f} → {count} nodos")
+
+        elif mode == 'heal':
+            # High fuerte → fuerza healing
+            if high > 0.55:
+                _nokka_sim.force_heal()
+                print(f"🎵 [AudioReactor] HEAL mode: high={high:.2f} → force_heal")
+
+        elif mode == 'noise':
+            # Energy modula noise_std dinámicamente
+            _nokka_sim.config.noise_std = max(0.01, min(0.5, energy * 0.6))
+            print(f"🎵 [AudioReactor] NOISE mode: energy={energy:.2f} → noise_std={_nokka_sim.config.noise_std:.3f}")
+
+    except Exception as e:
+        print(f"❌ [AudioReactor] Error en handle_audio_inject: {e}")
+
 # ── Hunt Profile ───────────────────────────
+
 @socketio.on('nokka_hunt_profile')
 def handle_hunt_profile(data):
     try:
@@ -221,6 +322,37 @@ def handle_hunt_profile(data):
     except Exception as e:
         print(f"❌ [BotHunter] Error en handle_hunt_profile: {e}")
 
+# ── Validation Readout ──────────────────────
+@socketio.on('nokka_run_validation')
+def handle_run_validation():
+    try:
+        print("🛡️ [Validator] Iniciando Suite de Validación RC (LOOCV N=1000)...")
+        socketio.emit('nokka_event', {
+            'message': '🛡️ Iniciando Validación Cruzada Científica...',
+            'type': 'warning'
+        })
+        
+        def progress_update(p):
+            socketio.emit('nokka_validation_progress', {'progress': p})
+            
+        # Ejecutar suite (esto toma <5s gracias a la vectorización y dual ridge)
+        metrics = run_rc_validation(n_samples=1000, grid_size=12, progress_cb=progress_update)
+        
+        print(f"✅ [Validator] Resultados: RC={metrics['acc_rc']*100:.1f}%, Delta={metrics['delta']*100:+.1f}%")
+        socketio.emit('nokka_validation_results', metrics)
+        
+        socketio.emit('nokka_event', {
+            'message': f"🏆 Validación Completa: {metrics['acc_rc']*100:.1f}% Accuracy",
+            'type': 'heal'
+        })
+        
+    except Exception as e:
+        print(f"❌ [Validator] Error en validación: {e}")
+        socketio.emit('nokka_event', {
+            'message': f'❌ Fallo en validación: {str(e)}',
+            'type': 'damage'
+        })
+
 # ─────────────────────────────────────────────
 # LAUNCHER
 # ─────────────────────────────────────────────
@@ -229,4 +361,4 @@ if __name__ == '__main__':
     print("🌌 NOKKA ETERNO STANDALONE ACTIVADO")
     print("📍 URL: http://localhost:5000/nokka")
     print("=" * 60)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=DEBUG_MODE, use_reloader=False)

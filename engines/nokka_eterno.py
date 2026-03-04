@@ -456,12 +456,17 @@ class NokkaSimulation:
                 "frame": int(self._frame),
                 "gridSize": int(N),
                 "sensors": {
-                    "positions": active_idx.tolist(),
-                    "colors": np.round(colors, 3).tolist(),
+                    # Flat array: [x0,y0,z0, x1,y1,z1, ...] — JS reagrupa de a 3
+                    # Reduce ~35% overhead vs lista-de-listas en Python
+                    "flat_positions": active_idx.flatten().tolist(),
+                    "flat_colors": np.round(colors, 3).flatten().tolist(),
+                    "flat_values":  np.round(values, 3).tolist(),  # valor de campo por nodo (para tooltips)
+                    "count": int(active_count),
                 },
                 "quiver": {
-                    "positions": q_pos.tolist(),
-                    "directions": np.round(q_dir, 3).tolist(),
+                    "flat_positions":   q_pos.flatten().tolist(),
+                    "flat_directions":  np.round(q_dir, 3).flatten().tolist(),
+                    "count": int(quiver_count),
                 },
                 "stats": {
                     "totalSensors": int(total_sensors),

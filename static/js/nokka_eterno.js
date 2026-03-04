@@ -463,6 +463,9 @@ const NokkaScene = (() => {
         // ── Resize ──
         window.addEventListener('resize', onResize);
 
+        // ── Arrancar Raycaster educativo (después de crear sensorPoints) ──
+        NokkaEduTooltips.init();
+
         // ── Start render loop ──
         animate();
     }
@@ -509,6 +512,7 @@ const NokkaScene = (() => {
         NokkaStarfield.update(_time);
         NokkaParticles.update(dt);
         NokkaShake.update(dt);
+        NokkaEduTooltips.update();  // hover sobre nodos 3D
 
         // Pulsing wireframe
         if (gridHelper) {
@@ -524,45 +528,44 @@ const NokkaScene = (() => {
         }
     }
 
-    function updateSensors(positions, colors) {
-        activeCount = positions.length;
+    // ── updateSensors: consume flat array del backend ──
+    // Formato: flat_positions = [x0,y0,z0, x1,y1,z1,...] | flat_colors = [r0,g0,b0,...]
+    function updateSensors(flat_pos, flat_col, count, flat_values) {
+        activeCount = count;
 
-        for (let i = 0; i < activeCount; i++) {
-            const p = positions[i];
-            const c = colors[i];
-            positionBuffer[i * 3] = p[0];
-            positionBuffer[i * 3 + 1] = p[1];
-            positionBuffer[i * 3 + 2] = p[2];
-            colorBuffer[i * 3] = c[0];
-            colorBuffer[i * 3 + 1] = c[1];
-            colorBuffer[i * 3 + 2] = c[2];
+        // Copiar directamente (sin reagrupación de arrays)
+        for (let i = 0; i < count * 3; i++) {
+            positionBuffer[i] = flat_pos[i];
+            colorBuffer[i]    = flat_col[i];
+        }
+        for (let i = 0; i < count; i++) {
             sizeBuffer[i] = 3.0;
         }
-
-        for (let i = activeCount; i < MAX_SENSORS; i++) {
-            sizeBuffer[i] = 0;
-        }
+        // Reset nodos inactivos
+        for (let i = count; i < MAX_SENSORS; i++) sizeBuffer[i] = 0;
 
         const geom = sensorPoints.geometry;
         geom.attributes.position.needsUpdate = true;
         geom.attributes.customColor.needsUpdate = true;
         geom.attributes.size.needsUpdate = true;
         geom.setDrawRange(0, activeCount);
+
+        // Pasar valores de campo al módulo de tooltips educativos
+        if (flat_values) NokkaEduTooltips.updateValues(flat_values);
     }
 
-    function updateQuiver(positions, directions) {
-        const count = positions.length;
+    // ── updateQuiver: consume flat array del backend ──
+    function updateQuiver(flat_pos, flat_dir, count) {
         const arrowScale = 0.6;
 
         for (let i = 0; i < count; i++) {
-            const p = positions[i];
-            const d = directions[i];
-            quiverPosBuffer[i * 6] = p[0];
-            quiverPosBuffer[i * 6 + 1] = p[1];
-            quiverPosBuffer[i * 6 + 2] = p[2];
-            quiverPosBuffer[i * 6 + 3] = p[0] + d[0] * arrowScale;
-            quiverPosBuffer[i * 6 + 4] = p[1] + d[1] * arrowScale;
-            quiverPosBuffer[i * 6 + 5] = p[2] + d[2] * arrowScale;
+            const b = i * 3;
+            quiverPosBuffer[i * 6]     = flat_pos[b];
+            quiverPosBuffer[i * 6 + 1] = flat_pos[b + 1];
+            quiverPosBuffer[i * 6 + 2] = flat_pos[b + 2];
+            quiverPosBuffer[i * 6 + 3] = flat_pos[b]     + flat_dir[b]     * arrowScale;
+            quiverPosBuffer[i * 6 + 4] = flat_pos[b + 1] + flat_dir[b + 1] * arrowScale;
+            quiverPosBuffer[i * 6 + 5] = flat_pos[b + 2] + flat_dir[b + 2] * arrowScale;
         }
 
         const geom = quiverLines.geometry;
@@ -580,14 +583,131 @@ const NokkaScene = (() => {
         }
     }
 
+    function getCamera() { return camera; }
+    function getScene() { return scene; }
+    function getRenderer() { return renderer; }
+    function getSensorPoints() { return sensorPoints; }
     function getGridSize() { return gridSize; }
 
-    return { init, updateSensors, updateQuiver, setGridSize, getGridSize };
+    return { init, updateSensors, updateQuiver, setGridSize,
+             getCamera, getScene, getRenderer, getSensorPoints, getGridSize };
 })();
 
 
 // ═══════════════════════════════════════════════════════════════
-// � MODULE: Hardware Detection
+// 📚 MODULE: Educational Tooltips
+// ═══════════════════════════════════════════════════════════════
+
+const NokkaEduTooltips = (() => {
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = 0.6; // radio de detección hover en nodos
+    const mouse = new THREE.Vector2();
+    let _lastIdx = -1;
+    let _dom = null;
+    let _fieldValues = [];  // valores de campo por nodo (del backend)
+
+    // ── Glosario educativo intuitivo (sin jerga técnica) ──
+    const DEFS = {
+        field: [
+            { range: [0.8, 1.0],  text: '🟢 Campo ALTO: Este nodo está en resonancia máxima — como un imán a plena potencia.' },
+            { range: [0.4, 0.8],  text: '🟡 Campo MEDIO: Oscilación estable. El nodo pulsa como un corazón bien calibrado.' },
+            { range: [0.0, 0.4],  text: '🔴 Campo BAJO: El nodo está débil. Puede ser precursor de daño.' },
+        ],
+        concepts: [
+            'Fase: el compsá de oscilación del nodo, como el vaivén de una ola en el océano.',
+            'Healing: los nodos vecinos sanan al nodo roto compartíendo su energía, como células regenerando tejido.',
+            'Entropía: nivel de desorden del campo. Alta entropía = campo caótico = más probabilidad de daño.',
+            'Amplitud: con qué fuerza oscila el nodo. Bots tienen amp negativa — como un iman invertido.',
+            'Reboot: reinicio total de fase aleatoria, como un Big Bang local que reorganiza todo el campo.'
+        ]
+    };
+
+    function _fieldLabel(val) {
+        const t = Math.abs(val);  // normalizar a positivo
+        for (const d of DEFS.field) {
+            if (t >= d.range[0] && t <= d.range[1]) return d.text;
+        }
+        return '⚪️ Campo desconocido.';
+    }
+
+    function init() {
+        // Crear el div de tooltip una sola vez
+        if (document.getElementById('nokka-edu-tooltip')) return;
+        _dom = document.createElement('div');
+        _dom.id = 'nokka-edu-tooltip';
+        _dom.style.cssText = `
+            position: fixed;
+            pointer-events: none;
+            display: none;
+            z-index: 9999;
+            max-width: 240px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid rgba(0,255,213,0.45);
+            background: rgba(5,5,20,0.92);
+            backdrop-filter: blur(8px);
+            color: #e0f7fa;
+            font-family: 'Outfit', sans-serif;
+            font-size: 12px;
+            line-height: 1.5;
+            box-shadow: 0 0 18px rgba(0,255,213,0.25);
+            transition: opacity 0.15s;
+        `;
+        document.body.appendChild(_dom);
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = (e.clientX / window.innerWidth)  * 2 - 1;
+            mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+            if (_dom && _dom.style.display === 'block') {
+                _dom.style.left = (e.clientX + 16) + 'px';
+                _dom.style.top  = Math.min(e.clientY + 16, window.innerHeight - 180) + 'px';
+            }
+        });
+        console.log('📚 [NokkaEduTooltips] Raycaster educativo inicializado.');
+    }
+
+    function update() {
+        const cam = NokkaScene.getCamera();
+        const pts = NokkaScene.getSensorPoints();
+        if (!cam || !pts) return;
+
+        raycaster.setFromCamera(mouse, cam);
+        const hits = raycaster.intersectObject(pts);
+
+        if (hits.length > 0) {
+            const idx = hits[0].index;
+            if (idx === _lastIdx) return;  // sin cambio
+            _lastIdx = idx;
+
+            const val  = _fieldValues[idx] ?? 0;
+            const x = positionBuffer ? positionBuffer[idx*3]   : '?';
+            const y = positionBuffer ? positionBuffer[idx*3+1] : '?';
+            const z = positionBuffer ? positionBuffer[idx*3+2] : '?';
+            const concept = DEFS.concepts[idx % DEFS.concepts.length];
+
+            _dom.innerHTML = `
+                <div style="color:#00ffd5;font-weight:700;margin-bottom:4px">
+                    ⚡ Nodo [${Math.round(x)},${Math.round(y)},${Math.round(z)}]
+                </div>
+                <div style="margin-bottom:6px">${_fieldLabel(val)}</div>
+                <div style="font-size:11px;color:#aaa;border-top:1px solid rgba(0,255,213,0.2);padding-top:6px">
+                    📚 <em>${concept}</em>
+                </div>
+            `;
+            _dom.style.display = 'block';
+        } else {
+            if (_lastIdx !== -1) { _lastIdx = -1; _dom.style.display = 'none'; }
+        }
+    }
+
+    function updateValues(values) { _fieldValues = values; }
+
+    return { init, update, updateValues };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════
+//  MODULE: Hardware Detection
 // ═══════════════════════════════════════════════════════════════
 
 const NokkaHardware = (() => {
@@ -831,7 +951,7 @@ const NokkaCompute = (() => {
 // ═══════════════════════════════════════════════════════════════
 
 const NokkaManager = (() => {
-    let currentMode = '3d'; // Default
+    let currentMode = '3d';
     let canvases = {
         '3d': document.getElementById('nokka-canvas'),
         '2d': document.getElementById('nokka-canvas-2d')
@@ -847,12 +967,12 @@ const NokkaManager = (() => {
         if (btn3d) btn3d.addEventListener('click', () => setMode('3d'));
         if (btn2d) btn2d.addEventListener('click', () => setMode('2d'));
 
-        // Auto-detect hardware
+        // Auto-detect hardware en boot (solo una vez, sin watchdog)
         const info = NokkaHardware.getInfo();
         NokkaHardware.updateHUD();
 
         if (info.isLowEnd) {
-            console.log('🚀 Low-end hardware detected, defaulting to 2D');
+            console.log('🖥️ [NokkaManager] Hardware bajo detectado → modo 2D directo');
             setMode('2d');
         } else {
             setMode('3d');
@@ -861,39 +981,286 @@ const NokkaManager = (() => {
 
     function setMode(mode) {
         currentMode = mode;
-        console.log('🔄 Switched to mode:', mode);
+        console.log('🔄 [NokkaManager] Modo:', mode);
 
-        // UI Update
         const btn3d = document.getElementById('mode-3d');
         const btn2d = document.getElementById('mode-2d');
         if (btn3d) btn3d.classList.toggle('active', mode === '3d');
         if (btn2d) btn2d.classList.toggle('active', mode === '2d');
 
-        // Canvas Visibility
         if (canvases['3d']) canvases['3d'].style.display = (mode === '3d') ? 'block' : 'none';
         if (canvases['2d']) canvases['2d'].style.display = (mode === '2d') ? 'block' : 'none';
 
-        NokkaFX.toast(`Modo ${mode.toUpperCase()} activado`, 'info');
+        const icon = mode === '3d' ? '🧊' : '🖥️';
+        NokkaFX.toast(`${icon} Modo ${mode.toUpperCase()} activado`, 'info');
     }
 
-    function updateData(data) {
-        // Shared updates
-        NokkaStats.update(data.stats, data.frame);
 
-        // Dispatch to active renderer
+
+
+// ═══════════════════════════════════════════════════════════════
+// 🎵 MODULE: YouTube Audio Reactor
+// ═══════════════════════════════════════════════════════════════
+
+const NokkaYouTubeAudio = (() => {
+    // ── State ──
+    let _audioCtx   = null;
+    let _analyser   = null;
+    let _dataArray  = null;
+    let _source     = null;
+    let _stream     = null;
+    let _rafId      = null;
+    let _emitTimer  = null;
+    let _ytPlayer   = null;
+    let _active     = false;
+
+    // ── YouTube IFrame API ──
+    let _ytApiReady = false;
+
+    function _loadYTApi() {
+        if (document.getElementById('yt-api-script')) return;
+        const tag = document.createElement('script');
+        tag.id  = 'yt-api-script';
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+        console.log('🎵 [YTAudio] YouTube IFrame API cargada.');
+    }
+
+    // Callback global requerido por la IFrame API
+    window.onYouTubeIframeAPIReady = function () {
+        _ytApiReady = true;
+        console.log('✅ [YTAudio] YouTube IFrame API ready.');
+    };
+
+    function _extractVideoId(input) {
+        // Acepta: ID directo, URL watch?v=, youtu.be/, shorts/
+        const patterns = [
+            /(?:v=|\/)([\w-]{11})(?:\?|&|$|\/)/,
+            /youtu\.be\/([\w-]{11})/,
+            /shorts\/([\w-]{11})/,
+        ];
+        for (const p of patterns) {
+            const m = input.match(p);
+            if (m) return m[1];
+        }
+        // Si tiene exactamente 11 chars, asumir que ya es ID
+        if (/^[\w-]{11}$/.test(input.trim())) return input.trim();
+        return null;
+    }
+
+    function loadVideo() {
+        const input = (document.getElementById('yt-url-input')?.value || '').trim();
+        if (!input) { _setStatus('⚠️ Ingresa URL o ID'); return; }
+
+        const videoId = _extractVideoId(input);
+        if (!videoId) { _setStatus('⚠️ URL no reconocida'); return; }
+
+        _loadYTApi();
+
+        const container = document.getElementById('yt-player-container');
+        if (container) container.style.display = 'block';
+
+        const _tryCreate = () => {
+            if (!_ytApiReady || !window.YT?.Player) {
+                setTimeout(_tryCreate, 300);
+                return;
+            }
+            if (_ytPlayer) { _ytPlayer.destroy(); _ytPlayer = null; }
+            _ytPlayer = new YT.Player('yt-player', {
+                width: '100%', height: '100%',
+                videoId: videoId,
+                playerVars: { autoplay: 1, controls: 1, rel: 0 },
+                events: {
+                    onReady: (e) => {
+                        e.target.playVideo();
+                        _setStatus('▶ Reproduciendo — captura audio');
+                        console.log(`🎵 [YTAudio] Video cargado: ${videoId}`);
+                    },
+                    onError: (e) => _setStatus(`❌ Error YT: ${e.data}`)
+                }
+            });
+        };
+        _tryCreate();
+    }
+
+    // ── Inicializar WebAudio desde stream ──
+    function _setupAnalyser(stream) {
+        stopCapture();  // cerrar cualquier stream previo
+
+        _stream   = stream;
+        _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _analyser = _audioCtx.createAnalyser();
+        _analyser.fftSize = 256;
+        _analyser.smoothingTimeConstant = 0.8;
+        _dataArray = new Uint8Array(_analyser.frequencyBinCount); // 128 bins
+
+        _source = _audioCtx.createMediaStreamSource(stream);
+        _source.connect(_analyser);
+        // NO conectar al destination → no reproduce de vuelta (evita eco)
+
+        _active = true;
+        console.log('🎙️ [YTAudio] Analyser configurado — sampleRate:', _audioCtx.sampleRate);
+        _startLoop();
+        _startEmit();
+    }
+
+    async function captureTab() {
+        try {
+            _setStatus('⏳ Solicitando Tab Audio...');
+            // getDisplayMedia {audio:true} captura el audio del tab en Chrome
+            const stream = await navigator.mediaDevices.getDisplayMedia({
+                video: false,
+                audio: { suppressLocalAudioPlayback: false }
+            });
+            _setupAnalyser(stream);
+            _setStatus('🖥️ Tab audio activo');
+            console.log('✅ [YTAudio] Tab audio capturado.');
+        } catch (e) {
+            _setStatus('❌ Tab Audio: ' + e.message);
+            console.warn('⚠️ [YTAudio] captureTab error:', e);
+        }
+    }
+
+    async function captureMic() {
+        try {
+            _setStatus('⏳ Solicitando micrófono...');
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            _setupAnalyser(stream);
+            _setStatus('🎙️ Micrófono activo');
+            console.log('✅ [YTAudio] Micrófono capturado.');
+        } catch (e) {
+            _setStatus('❌ Mic: ' + e.message);
+            console.warn('⚠️ [YTAudio] captureMic error:', e);
+        }
+    }
+
+    function stopCapture() {
+        _active = false;
+        if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+        if (_emitTimer) { clearInterval(_emitTimer); _emitTimer = null; }
+        if (_source) { try { _source.disconnect(); } catch (e) {} _source = null; }
+        if (_audioCtx) { try { _audioCtx.close(); } catch (e) {} _audioCtx = null; }
+        if (_stream) { _stream.getTracks().forEach(t => t.stop()); _stream = null; }
+        _setStatus('· inactivo');
+        // Limpiar canvas
+        const cv = document.getElementById('yt-fft-canvas');
+        if (cv) { const ctx = cv.getContext('2d'); ctx.clearRect(0, 0, cv.width, cv.height); }
+        console.log('⏹️  [YTAudio] Captura detenida.');
+    }
+
+    // ── Loop de visualización FFT ──────────────────────
+    function _startLoop() {
+        const canvas = document.getElementById('yt-fft-canvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+
+        function draw() {
+            if (!_active || !_analyser) return;
+            _rafId = requestAnimationFrame(draw);
+            _analyser.getByteFrequencyData(_dataArray);
+
+            ctx.fillStyle = 'rgba(5,5,20,0.4)';
+            ctx.fillRect(0, 0, W, H);
+
+            const barW = W / _dataArray.length;
+            for (let i = 0; i < _dataArray.length; i++) {
+                const v = _dataArray[i] / 255;
+                const h = v * H;
+                // Gradiente por frecuencia: bass=rosa, mid=cyan, high=violeta
+                const r = i < 43 ? 255 : i < 86 ? Math.round(255 * (1 - (i-43)/43)) : 0;
+                const g = i < 43 ? Math.round(77 * (i/43)) : i < 86 ? 255 : Math.round(255 * (i-86)/42);
+                const b = i < 43 ? 136 : i < 86 ? 213 : 255;
+                ctx.fillStyle = `rgb(${r},${g},${b})`;
+                ctx.fillRect(i * barW, H - h, barW - 0.5, h);
+            }
+        }
+        draw();
+    }
+
+    // ── Extrae y emite bandas cada 200ms ───────────────
+    function _startEmit() {
+        if (_emitTimer) clearInterval(_emitTimer);
+        _emitTimer = setInterval(() => {
+            if (!_active || !_analyser) return;
+            _analyser.getByteFrequencyData(_dataArray);
+
+            const bins = _dataArray.length; // 128
+            // Bass: 0–20%, Mid: 20–60%, High: 60–100%
+            const bandSize = [
+                [0,              Math.floor(bins * 0.20)],
+                [Math.floor(bins * 0.20), Math.floor(bins * 0.60)],
+                [Math.floor(bins * 0.60), bins],
+            ];
+            const avg = (a, b) => {
+                let s = 0; for (let i = a; i < b; i++) s += _dataArray[i];
+                return s / ((b - a) * 255);
+            };
+
+            const bass = avg(...bandSize[0]);
+            const mid  = avg(...bandSize[1]);
+            const high = avg(...bandSize[2]);
+            const energy = (bass * 0.5 + mid * 0.3 + high * 0.2);
+
+            // Actualizar HUD
+            const fmt = v => v.toFixed(2);
+            const elBass = document.getElementById('yt-bass');
+            const elMid  = document.getElementById('yt-mid');
+            const elHigh = document.getElementById('yt-high');
+            if (elBass) elBass.textContent = fmt(bass);
+            if (elMid)  elMid.textContent  = fmt(mid);
+            if (elHigh) elHigh.textContent = fmt(high);
+
+            // Emitir al servidor
+            const mode = document.getElementById('yt-inject-mode')?.value || 'phase';
+            if (window._nokkaSocket) {
+                window._nokkaSocket.emit('nokka_audio_inject', {
+                    bass: parseFloat(bass.toFixed(3)),
+                    mid:  parseFloat(mid.toFixed(3)),
+                    high: parseFloat(high.toFixed(3)),
+                    energy: parseFloat(energy.toFixed(3)),
+                    mode: mode
+                });
+            }
+        }, 200);
+    }
+
+    function _setStatus(text) {
+        const el = document.getElementById('yt-status');
+        if (el) el.textContent = text;
+    }
+
+    return { loadVideo, captureTab, captureMic, stopCapture };
+})();
+
+
+    function updateData(data) {
+        NokkaStats.update(data.stats, data.frame);
+        const s = data.sensors;
+        const q = data.quiver;
+
         if (currentMode === '3d') {
             NokkaScene.setGridSize(data.gridSize);
-            NokkaScene.updateSensors(data.sensors.positions, data.sensors.colors);
-            NokkaScene.updateQuiver(data.quiver.positions, data.quiver.directions);
+            NokkaScene.updateSensors(s.flat_positions, s.flat_colors, s.count, s.flat_values);
+            NokkaScene.updateQuiver(q.flat_positions, q.flat_directions, q.count);
         } else {
             Nokka2DRenderer.setGridSize(data.gridSize);
-            Nokka2DRenderer.updateSensors(data.sensors.positions, data.sensors.colors);
-            Nokka2DRenderer.updateQuiver(data.quiver.positions, data.quiver.directions);
+            // 2D renderer: reagrupar flat para compatibilidad
+            const positions = [];
+            const colors    = [];
+            for (let i = 0; i < s.count; i++) {
+                positions.push([s.flat_positions[i*3], s.flat_positions[i*3+1], s.flat_positions[i*3+2]]);
+                colors.push(   [s.flat_colors[i*3],    s.flat_colors[i*3+1],    s.flat_colors[i*3+2]]);
+            }
+            Nokka2DRenderer.updateSensors(positions, colors);
+            Nokka2DRenderer.updateQuiver([], []);
         }
     }
 
     return { init, setMode, updateData, getMode: () => currentMode };
 })();
+
+
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -906,10 +1273,12 @@ const NokkaSocket = (() => {
 
     function connect() {
         socket = io({ transports: ['polling', 'websocket'] });
+        window._nokkaSocket = socket;  // expuesto para NokkaYouTubeAudio
 
         socket.on('connect', () => {
             console.log('🌌 NOKKA connected:', socket.id);
             NokkaFX.toast('Conexión establecida', 'info');
+            NokkaAudio.playConnect();
         });
 
         socket.on('disconnect', () => {
@@ -990,23 +1359,33 @@ const NokkaSocket = (() => {
             NokkaFX.toast(data.message, data.type);
             NokkaFX.flash(data.type);
 
-            // Particle effects + camera shake
             const gs = NokkaScene.getGridSize();
             const mode = NokkaManager.getMode();
 
             if (data.type === 'damage') {
+                NokkaAudio.playDamage();
                 if (mode === '3d') {
                     NokkaParticles.emitDamageBurst(gs);
                     NokkaShake.trigger(0.6);
                 }
             } else if (data.type === 'heal') {
+                NokkaAudio.playHeal();
                 if (mode === '3d') NokkaParticles.emitHealBurst(gs);
             } else if (data.type === 'reboot') {
+                NokkaAudio.playReboot();
                 if (mode === '3d') {
                     NokkaParticles.emitRebootBurst(gs);
                     NokkaShake.trigger(0.3);
                 }
             }
+        });
+
+        socket.on('nokka_validation_progress', (data) => {
+            if (window.NokkaValidator) NokkaValidator.updateProgress(data.progress);
+        });
+
+        socket.on('nokka_validation_results', (data) => {
+            if (window.NokkaValidator) NokkaValidator.showResults(data);
         });
     }
 
@@ -1060,6 +1439,181 @@ const NokkaSocket = (() => {
     }
 
     return { connect, start, stop, toggle, damage, heal, reboot, isRunning, huntProfile };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════
+// 🔊 MODULE: NokkaAudio — WebAudio API Procedural (Upgrade #5)
+// ═══════════════════════════════════════════════════════════════
+
+const NokkaAudio = (() => {
+    let ctx = null;
+    let masterGain = null;
+    let muted = false;
+    let initialized = false;
+
+    // ── Inicializar AudioContext (diferido: requiere gesto del usuario) ──
+    function init() {
+        try {
+            ctx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = ctx.createGain();
+            masterGain.gain.value = 0.35;
+            masterGain.connect(ctx.destination);
+            initialized = true;
+            console.log('🔊 [NokkaAudio] WebAudio API inicializado — sampleRate:', ctx.sampleRate);
+        } catch (e) {
+            console.warn('⚠️ [NokkaAudio] No disponible en este browser:', e);
+        }
+    }
+
+    function _resume() {
+        if (ctx && ctx.state === 'suspended') ctx.resume();
+    }
+
+    // ── Heal: resonancia baja orgánica — Kultrun cósmico ──
+    function playHeal() {
+        if (!initialized || muted) return;
+        _resume();
+        try {
+            const now = ctx.currentTime;
+
+            // Sub-bass rumble (kultrun bajo)
+            const osc1 = ctx.createOscillator();
+            const gain1 = ctx.createGain();
+            osc1.type = 'sine';
+            osc1.frequency.setValueAtTime(60, now);
+            osc1.frequency.exponentialRampToValueAtTime(40, now + 1.2);
+            gain1.gain.setValueAtTime(0.0, now);
+            gain1.gain.linearRampToValueAtTime(0.6, now + 0.08);
+            gain1.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+            osc1.connect(gain1); gain1.connect(masterGain);
+            osc1.start(now); osc1.stop(now + 1.2);
+
+            // Harmónico brillante (healing aura)
+            const osc2 = ctx.createOscillator();
+            const gain2 = ctx.createGain();
+            osc2.type = 'triangle';
+            osc2.frequency.setValueAtTime(528, now + 0.05);  // frecuencia Solfeggio "healing"
+            osc2.frequency.linearRampToValueAtTime(432, now + 1.0);
+            gain2.gain.setValueAtTime(0.0, now);
+            gain2.gain.linearRampToValueAtTime(0.2, now + 0.15);
+            gain2.gain.exponentialRampToValueAtTime(0.001, now + 1.5);
+            osc2.connect(gain2); gain2.connect(masterGain);
+            osc2.start(now + 0.05); osc2.stop(now + 1.5);
+
+            console.log('🔊 [NokkaAudio] heal — 60Hz kultrun + 528Hz aura');
+        } catch (e) { console.warn('❌ [NokkaAudio] playHeal error:', e); }
+    }
+
+    // ── Damage: whale-call distorsionado — interferencia destructiva ──
+    function playDamage() {
+        if (!initialized || muted) return;
+        _resume();
+        try {
+            const now = ctx.currentTime;
+
+            // Whale descend (freq sweep descendente)
+            const osc = ctx.createOscillator();
+            const dist = ctx.createWaveShaper();
+            const gain = ctx.createGain();
+
+            // Distortion curve
+            const curve = new Float32Array(256);
+            for (let i = 0; i < 256; i++) {
+                const x = (i * 2) / 256 - 1;
+                curve[i] = (Math.PI + 200) * x / (Math.PI + 200 * Math.abs(x));
+            }
+            dist.curve = curve;
+
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(320, now);
+            osc.frequency.exponentialRampToValueAtTime(55, now + 0.7);
+            gain.gain.setValueAtTime(0.0, now);
+            gain.gain.linearRampToValueAtTime(0.5, now + 0.04);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+
+            osc.connect(dist); dist.connect(gain); gain.connect(masterGain);
+            osc.start(now); osc.stop(now + 0.8);
+
+            console.log('🔊 [NokkaAudio] damage — whale-call distorsionado 320→55Hz');
+        } catch (e) { console.warn('❌ [NokkaAudio] playDamage error:', e); }
+    }
+
+    // ── Reboot: burst de noise filtrado — tambor galáctico ──
+    function playReboot() {
+        if (!initialized || muted) return;
+        _resume();
+        try {
+            const now = ctx.currentTime;
+            const bufferSize = ctx.sampleRate * 0.6;
+            const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+
+            // BandPass filter centrado en 200Hz (tambor bajo)
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.value = 200;
+            filter.Q.value = 0.8;
+
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.0, now);
+            gain.gain.linearRampToValueAtTime(0.9, now + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+
+            source.connect(filter); filter.connect(gain); gain.connect(masterGain);
+            source.start(now);
+
+            // + Sweep tonal encima
+            const osc = ctx.createOscillator();
+            const og = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(100, now);
+            osc.frequency.exponentialRampToValueAtTime(800, now + 0.5);
+            og.gain.setValueAtTime(0.3, now);
+            og.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+            osc.connect(og); og.connect(masterGain);
+            osc.start(now); osc.stop(now + 0.5);
+
+            console.log('🔊 [NokkaAudio] reboot — tambor galáctico + sweep');
+        } catch (e) { console.warn('❌ [NokkaAudio] playReboot error:', e); }
+    }
+
+    // ── Connect: ping suave de conexión ──
+    function playConnect() {
+        if (!initialized || muted) return;
+        _resume();
+        try {
+            const now = ctx.currentTime;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(880, now);
+            osc.frequency.setValueAtTime(1320, now + 0.1);
+            gain.gain.setValueAtTime(0.15, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+            osc.connect(gain); gain.connect(masterGain);
+            osc.start(now); osc.stop(now + 0.4);
+        } catch (e) {}
+    }
+
+    function toggleMute() {
+        muted = !muted;
+        if (masterGain) masterGain.gain.value = muted ? 0 : 0.35;
+        const icon = muted ? '🔇' : '🔊';
+        NokkaFX.toast(`${icon} Audio ${muted ? 'silenciado' : 'activado'}`, 'info');
+        console.log(`🔊 [NokkaAudio] Mute: ${muted}`);
+        // Actualizar botón mute si existe
+        const btn = document.getElementById('btn-mute');
+        if (btn) btn.textContent = muted ? '🔇' : '🔊';
+    }
+
+    function isMuted() { return muted; }
+
+    return { init, playHeal, playDamage, playReboot, playConnect, toggleMute, isMuted };
 })();
 
 
@@ -1118,6 +1672,9 @@ const NokkaControls = (() => {
                 case 'KeyS':
                     NokkaSocket.toggle();
                     break;
+                case 'KeyM':
+                    NokkaAudio.toggleMute();
+                    break;
             }
         });
     }
@@ -1164,11 +1721,85 @@ function hideLoading() {
 
 
 // ═══════════════════════════════════════════════════════════════
+// 🛡️ MODULE: NokkaValidator
+// ═══════════════════════════════════════════════════════════════
+
+const NokkaValidator = (() => {
+    let running = false;
+    const btn = document.getElementById('btn-run-validation');
+    const progContainer = document.getElementById('val-progress-container');
+    const progBar = document.getElementById('val-progress-bar');
+    const progText = document.getElementById('val-progress-text');
+    const resultsGrid = document.getElementById('val-results');
+
+    function run() {
+        if (running) return;
+        running = true;
+        
+        // UI Reset
+        if (btn) {
+            btn.disabled = true;
+            btn.innerText = '⏳ PROCESANDO...';
+            btn.style.opacity = '0.5';
+        }
+        if (progContainer) progContainer.style.display = 'block';
+        if (progBar) progBar.style.width = '0%';
+        if (progText) progText.innerText = '0%';
+        if (resultsGrid) resultsGrid.style.display = 'none';
+
+        // Socket Emit
+        if (window._nokkaSocket) {
+            window._nokkaSocket.emit('nokka_run_validation');
+        }
+    }
+
+    function updateProgress(p) {
+        if (progBar) progBar.style.width = p + '%';
+        if (progText) progText.innerText = p + '%';
+    }
+
+    function showResults(data) {
+        running = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = '🚀 RE-EJECUTAR LOOCV';
+            btn.style.opacity = '1';
+        }
+        if (progContainer) progContainer.style.display = 'none';
+        if (resultsGrid) {
+            resultsGrid.style.display = 'grid';
+            
+            const rc = (data.acc_rc * 100).toFixed(1) + '%';
+            const rb = (data.acc_rule * 100).toFixed(1) + '%';
+            const delta = (data.delta * 100).toFixed(1);
+            const sign = delta >= 0 ? '+' : '';
+            
+            document.getElementById('val-acc-rc').innerText = rc;
+            document.getElementById('val-acc-rule').innerText = rb;
+            
+            const elDelta = document.getElementById('val-delta');
+            elDelta.innerText = sign + delta + '%';
+            elDelta.className = 'cmp-value ' + (delta >= 0 ? 'heal' : 'damage');
+            
+            document.getElementById('val-time').innerText = (data.time_ms / 1000).toFixed(1) + 's';
+        }
+    }
+
+    return { run, updateProgress, showResults };
+})();
+
+window.NokkaValidator = NokkaValidator;
+
+
+// ═══════════════════════════════════════════════════════════════
 // 🚀 BOOT
 // ═══════════════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 [Nokka] DOMContentLoaded — iniciando módulos...');
+
+    // ── Audio (primer gesto asegura contexto activo) ──
+    NokkaAudio.init();
 
     // ── Inicializar valores de sliders en el DOM (evita mostrar "?") ──
     const sldGrid  = document.getElementById('sld-grid');
