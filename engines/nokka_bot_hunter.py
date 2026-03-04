@@ -5,8 +5,20 @@ import hashlib
 import threading
 
 # ================== CONFIG ==================
-# ATENCIÓN: Necesitas reemplazar esto con un Bearer Token válido de Twitter/X API v2
-BEARER_TOKEN = "INGRESA_TU_BEARER_TOKEN_AQUI"
+# Carga desde .env: BEARER_TOKEN=tu_token_aqui
+# Si no está configurado, el sistema corre en DEMO MODE OFFLINE.
+try:
+    from dotenv import load_dotenv
+    import os
+    load_dotenv()
+    BEARER_TOKEN = os.getenv("BEARER_TOKEN", "INGRESA_TU_BEARER_TOKEN_AQUI")
+    if BEARER_TOKEN == "INGRESA_TU_BEARER_TOKEN_AQUI":
+        print("⚠️  [BotHunter] BEARER_TOKEN no configurado — modo DEMO OFFLINE activo.")
+    else:
+        print("🔑 [BotHunter] Bearer Token cargado desde .env")
+except ImportError:
+    BEARER_TOKEN = "INGRESA_TU_BEARER_TOKEN_AQUI"
+    print("⚠️  [BotHunter] python-dotenv no disponible — usando token hardcodeado.")
 
 class NokkaBotHunter:
     """
@@ -26,11 +38,13 @@ class NokkaBotHunter:
 
     def start(self, usernames=None):
         if self._running:
+            print("⚠️  [BotHunter] start() llamado pero ya estaba corriendo — ignorado.")
             return
         self._running = True
         self._thread = threading.Thread(target=self._hunt_loop, args=(usernames,), daemon=True)
         self._thread.start()
-        print("🕸️ [BotHunter] Filtro Nodal 9D+1 Activado. Cazando sombras...")
+        mode = 'LIVE' if self.client else 'DEMO OFFLINE'
+        print(f"🕸️ [BotHunter] Filtro Nodal 9D+1 Activado — Modo: {mode}")
 
     def stop(self):
         self._running = False
@@ -81,53 +95,60 @@ class NokkaBotHunter:
         if not usernames:
             usernames = ["elonmusk", "x_anxi_ety", "X", "OpenAI", "NASA"]
 
+        scan_count = 0
         while self._running:
             for username in usernames:
                 if not self._running:
                     break
-                    
+
                 try:
+                    print(f"🔎 [BotHunter LIVE] Escaneando @{username}...")
                     user = self.client.get_user(
-                        username=username, 
+                        username=username,
                         user_fields=['created_at', 'public_metrics', 'description']
                     ).data
-                    
+
                     if not user:
+                        print(f"⚠️  [BotHunter] @{username} no encontrado en X API.")
                         continue
-                        
+
                     with self.nokka._lock:
                         N = self.nokka.config.grid_size
                         coord = self._hash_to_coord(username, N)
                         distortion, amp = self._profile_to_phase_distortion(user)
-                        
-                        # INYECCIÓN AL RESERVORIO (Modula la fase base)
-                        # Aplica el vector de distorsión al tensor 3D en la coordenada exacta
+
                         self.nokka._phase[coord] += np.sum(distortion) * amp * 2.0
-                        
-                        # Trigger de entropía/newen
+
                         if amp > 0:
-                            # Aliado -> Fuerza curación pasiva en la malla
-                            self.nokka._apply_healing() 
-                            print(f"✅ [{username}] Resonancia Armónica. Nodo reforzado.")
+                            self.nokka._apply_healing()
+                            followers = user.public_metrics.get('followers_count', '?')
+                            print(f"✅ [BotHunter] @{username} — Resonancia Armónica | "
+                                  f"coord={coord} | amp={amp:.2f} | followers={followers}")
                         else:
-                            # Bot -> Daño masivo focalizado (Bayesian Negative)
-                            # Simulamos daño en el nodo y vecinos
                             self.nokka._sensors_active[coord] = False
                             self.nokka._grid[coord] *= 0.01
-                            print(f"🚨 [{username}] Interferencia Destructiva! (Bot/Troll detectado)")
-                            
+                            print(f"🚨 [BotHunter] @{username} — Interferencia Destructiva! | "
+                                  f"coord={coord} | amp={amp:.2f} (Bot/Troll detectado)")
+
+                    scan_count += 1
+
                 except tweepy.errors.Unauthorized:
-                    print(f"⚠️ [BotHunter] 401 Unauthorized. Token inválido. Cambiando a DEMO MODE OFFLINE...")
+                    print("🔴 [BotHunter] 401 Unauthorized — Token inválido. "
+                          "Cambiando a DEMO MODE OFFLINE...")
                     self.client = None
                     self._demo_loop()
                     return
+                except tweepy.errors.TooManyRequests:
+                    print("⏳ [BotHunter] Rate limit de X API alcanzado — esperando 60s...")
+                    time.sleep(60)
                 except Exception as e:
-                    print(f"⚠️ [BotHunter] Error escaseando a {username}: {e}")
-                
+                    print(f"❌ [BotHunter] Error escaneando @{username}: {type(e).__name__}: {e}")
+
                 # Latencia orgánica (Rate Limiting de X API)
-                time.sleep(2.5) 
-                
-            # Pequeña pausa antes de volver a escanear la lista
+                time.sleep(2.5)
+
+            print(f"🔁 [BotHunter] Ciclo #{scan_count // max(1, len(usernames))} completado — "
+                  f"pausa 10s antes del próximo ciclo.")
             time.sleep(10.0)
 
     def _demo_loop(self):
@@ -139,29 +160,35 @@ class NokkaBotHunter:
             {"name": "troll_politico", "is_bot": True, "amp": -1.8, "desc": "Rigidez ideológica"}
         ]
         
+        demo_cycle = 0
         while self._running:
             for p in demo_profiles:
-                if not self._running: break
-                
-                with self.nokka._lock:
-                    N = self.nokka.config.grid_size
-                    coord = self._hash_to_coord(p["name"], N)
-                    
-                    # Simular distorsión
-                    distortion = np.array([np.random.rand(), np.random.rand(), np.random.rand()])
-                    
-                    # Inyección
-                    self.nokka._phase[coord] += np.sum(distortion) * p["amp"] * 2.0
-                    
-                    if not p["is_bot"]:
-                        self.nokka._apply_healing()
-                        print(f"✅ [DEMO: {p['name']}] Resonancia Armónica. ({p['desc']})")
-                    else:
-                        self.nokka._sensors_active[coord] = False
-                        self.nokka._grid[coord] *= 0.01
-                        print(f"🚨 [DEMO: {p['name']}] Interferencia! ({p['desc']})")
-                        
+                if not self._running:
+                    break
+
+                try:
+                    with self.nokka._lock:
+                        N = self.nokka.config.grid_size
+                        coord = self._hash_to_coord(p["name"], N)
+                        distortion = np.array([np.random.rand(), np.random.rand(), np.random.rand()])
+                        self.nokka._phase[coord] += np.sum(distortion) * p["amp"] * 2.0
+
+                        if not p["is_bot"]:
+                            self.nokka._apply_healing()
+                            print(f"✅ [DEMO] {p['name']} — Resonancia | "
+                                  f"coord={coord} | amp={p['amp']:+.1f} | {p['desc']}")
+                        else:
+                            self.nokka._sensors_active[coord] = False
+                            self.nokka._grid[coord] *= 0.01
+                            print(f"🚨 [DEMO] {p['name']} — Interferencia! | "
+                                  f"coord={coord} | amp={p['amp']:+.1f} | {p['desc']}")
+                except Exception as e:
+                    print(f"❌ [BotHunter DEMO] Error procesando {p['name']}: {e}")
+
                 time.sleep(3.0)
+
+            demo_cycle += 1
+            print(f"🔁 [BotHunter DEMO] Ciclo #{demo_cycle} completado.")
 
     def _hunt_single(self, username: str):
         """Escanea un único perfil bajo demanda (Manual Scan)"""

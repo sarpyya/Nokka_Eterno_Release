@@ -1,6 +1,8 @@
 flask>=3.0.0
 flask-socketio>=5.3.6
+flask-cors>=4.0.0
 tweepy>=4.14.0
 numpy>=1.26.0
 requests>=2.31.0
 python-dotenv>=1.0.1
+psutil>=5.9.0

@@ -260,24 +260,39 @@ const NokkaShake = (() => {
     function init(cam) {
         camera = cam;
         basePosition.copy(cam.position);
+        console.log('📸 [NokkaShake] Inicializado — base:', cam.position);
     }
 
     function trigger(power = 0.5) {
         intensity = power;
+        console.log(`📸 [NokkaShake] Shake disparado — power=${power.toFixed(2)}`);
     }
 
     function update(dt) {
-        if (!camera || intensity <= 0) return;
+        if (!camera) return;
 
-        camera.position.x += (Math.random() - 0.5) * intensity * 0.8;
-        camera.position.y += (Math.random() - 0.5) * intensity * 0.6;
-        camera.position.z += (Math.random() - 0.5) * intensity * 0.8;
+        if (intensity > 0) {
+            // Aplica desplazamiento aleatorio
+            camera.position.x = basePosition.x + (Math.random() - 0.5) * intensity * 0.8;
+            camera.position.y = basePosition.y + (Math.random() - 0.5) * intensity * 0.6;
+            camera.position.z = basePosition.z + (Math.random() - 0.5) * intensity * 0.8;
 
-        intensity *= 0.88; // decay
-        if (intensity < 0.01) intensity = 0;
+            intensity *= 0.88; // decay
+            if (intensity < 0.01) {
+                intensity = 0;
+                // Restaurar posición base exacta al terminar
+                camera.position.copy(basePosition);
+                console.log('📸 [NokkaShake] Shake completado — cámara restaurada al baseline.');
+            }
+        }
     }
 
-    return { init, trigger, update };
+    // Permite actualizar la posición base cuando OrbitControls mueve la cámara
+    function updateBase() {
+        if (camera && intensity <= 0) basePosition.copy(camera.position);
+    }
+
+    return { init, trigger, update, updateBase };
 })();
 
 
@@ -293,11 +308,11 @@ const NokkaScene = (() => {
     let gridHelper = null;
     let gridSize = 12;
 
-    const MAX_SENSORS = 32 * 32 * 32; // Supports up to N=32
+    const MAX_SENSORS = 100 * 100 * 100; // Supports up to N=100
     let positionBuffer, colorBuffer, sizeBuffer;
     let activeCount = 0;
 
-    const MAX_QUIVER = 16 * 16 * 16; // Supports up to N=32 with step=2
+    const MAX_QUIVER = 50 * 50 * 50; // Supports up to N=100 with step=2
     let quiverPosBuffer;
 
     function init(canvasId) {
@@ -484,6 +499,8 @@ const NokkaScene = (() => {
         _time += dt;
 
         controls.update();
+        // Sincronizar basePosition del shake con la posición actual de la cámara (tras drag)
+        NokkaShake.updateBase();
 
         // Update modules
         if (sensorPoints && sensorPoints.material.uniforms) {
@@ -1151,15 +1168,41 @@ function hideLoading() {
 // ═══════════════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Init All Modules
-    NokkaScene.init('nokka-canvas');
-    Nokka2DRenderer.init('nokka-canvas-2d');
-    NokkaManager.init(); // This will auto-switch based on HW
+    console.log('🚀 [Nokka] DOMContentLoaded — iniciando módulos...');
 
+    // ── Inicializar valores de sliders en el DOM (evita mostrar "?") ──
+    const sldGrid  = document.getElementById('sld-grid');
+    const sldSpeed = document.getElementById('sld-speed');
+    const sldNoise = document.getElementById('sld-noise');
+    const valGrid  = document.getElementById('val-grid');
+    const valSpeed = document.getElementById('val-speed');
+    const valNoise = document.getElementById('val-noise');
+    if (sldGrid  && valGrid)  valGrid.innerText  = sldGrid.value;
+    if (sldSpeed && valSpeed) valSpeed.innerText = sldSpeed.value;
+    if (sldNoise && valNoise) valNoise.innerText = sldNoise.value;
+    console.log(`⚙️  [Nokka] Sliders inicializados — grid=${sldGrid?.value} | speed=${sldSpeed?.value} | noise=${sldNoise?.value}`);
+
+    // ── Init All Modules ──
+    try {
+        NokkaScene.init('nokka-canvas');
+        console.log('✅ [NokkaScene] 3D inicializado.');
+    } catch (e) {
+        console.error('❌ [NokkaScene] Fallo al inicializar 3D:', e);
+    }
+
+    try {
+        Nokka2DRenderer.init('nokka-canvas-2d');
+        console.log('✅ [Nokka2DRenderer] 2D inicializado.');
+    } catch (e) {
+        console.error('❌ [Nokka2DRenderer] Fallo al inicializar 2D:', e);
+    }
+
+    NokkaManager.init(); // Auto-switch basado en hardware
     NokkaControls.init();
     NokkaSocket.connect();
 
     setTimeout(hideLoading, 800);
     updateUI();
     updateStatus('ESPERANDO INICIO...');
+    console.log('✅ [Nokka] Boot completo.');
 });

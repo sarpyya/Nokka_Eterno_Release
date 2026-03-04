@@ -82,7 +82,7 @@ body.nokka-body {
         "header header header"
         "left viewport right"
         "footer footer footer";
-    grid-template-columns: 320px 1fr 320px;
+    grid-template-columns: min-content 1fr min-content;
     grid-template-rows: auto 1fr auto;
     width: 100vw;
     height: 100vh;
@@ -172,7 +172,7 @@ body.nokka-body {
     padding: 16px;
     gap: 16px;
     height: 100%;
-    overflow-y: auto;
+    overflow-y: hidden;
     scrollbar-width: none;
 }
 
@@ -650,7 +650,7 @@ body.nokka-body {
 
 @media (max-width: 1200px) {
     .hud-grid {
-        grid-template-columns: 280px 1fr 280px;
+        grid-template-columns: min-content 1fr min-content;
     }
 }
 

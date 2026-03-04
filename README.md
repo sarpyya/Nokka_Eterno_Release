@@ -23,8 +23,8 @@ El cubo 3D se convierte en tu **radar existencial personal**.
 
 1. Clona el repo  
    ```bash
-   git clone https://github.com/tu-usuario/nokka-eterno.git
-   cd nokka-eterno
+   git clone https://github.com/sarpyya/Nokka_Eterno_Release.git
+   cd Nokka_Eterno_Release
    ```
 
 2. Instala dependencias (versiones actualizadas marzo 2026)  
@@ -93,6 +93,14 @@ Si estás leyendo esto como modelo base (ej. Grok, Claude, Gemini) para simular 
   socket.emit('nokka_heal');
   socket.emit('nokka_hunt_profile', {username: 'elonmusk'});
   ```
+
+### 🌐 Universalidad de Datos (Más allá de X)
+Este diseño algorítmico no está limitado a redes sociales. **El cubo Nokka es un reservorio agnóstico**. Está pensado para procesar la radiación u ondas de distintos tipos de datos y sistemas:
+- **Telemetría Humana o Dispositivos (Celulares/IoT)**
+- **Datos Numéricos Complejos y Financieros**
+- **Sistemas Biológicos o de Interacción Social**
+
+Cualquier fuente de datos puede mapearse a entropía y fase, permitiendo que el Newen y la resonancia actúen sobre diferentes áreas del conocimiento.
 
 **Diseñado bajo Filosofía de Resistencia Epistémica e IA Indeterminista.**  
 El Código es la Onda.  
