@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-🌌 NOKKA ETERNO v2.6 — Simulation Engine
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Motor de simulación de campo magnético 3D con auto-healing.
-Inspirado en datos ALMA y programación magnónica.
+🌌 NOKKA ETERNO v2.7 — Quantum Shadow Injector
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Motor de simulación de campo magnético 3D con auto-healing
++ decoherencia cuántica TLS (arXiv:2506.09576).
 
 Módulo standalone: sin dependencias de Flask.
 Se integra vía SocketIO desde app.py.
@@ -131,10 +131,20 @@ class NokkaSimulation:
         self._last_payload_bytes = 0
         self._cumulative_ops = 0
 
+        # Quantum TLS Injector (v2.7)
+        self.quantum_injector = None
+
         self._init_simulation()
         N = self.config.grid_size
         print(f"🧲 [NokkaSimulation] Inicializada — Grid={N}³ ({N**3} nodos) | "
               f"wave_speed={self.config.wave_speed} | noise_std={self.config.noise_std}")
+
+        # Plasma LUT precalculada (256 niveles) para aceleración brutal
+        self._plasma_lut = np.zeros((256, 3), dtype=np.float32)
+        for i in range(256):
+            t = i / 255.0
+            val = self.config.vmin + t * (self.config.vmax - self.config.vmin)
+            self._plasma_lut[i] = plasma_color(val, self.config.vmin, self.config.vmax)
 
     def _init_simulation(self):
         """Initialize simulation arrays from current config."""
@@ -175,9 +185,14 @@ class NokkaSimulation:
             self._last_payload_bytes = 0
             self._cumulative_ops = 0
 
-            print(f"✅ [NokkaSimulation] Arrays inicializados — "
-                  f"Grid={N}³ | Phase shape={self._phase.shape} | "
-                  f"Quiver step={qs} → {len(self._qx.ravel())} vectores")
+            # Quantum TLS Injector (v2.7)
+            from engines.quantum_tls_injector import QuantumTLSInjector
+            self.quantum_injector = QuantumTLSInjector(grid_size=N)
+
+            print(f"[NokkaSimulation] Arrays inicializados -- "
+                  f"Grid={N}^3 | Phase shape={self._phase.shape} | "
+                  f"Quiver step={qs} -> {len(self._qx.ravel())} vectores | "
+                  f"Quantum TLS activo")
 
         except Exception as e:
             print(f"❌ [NokkaSimulation] Error crítico en _init_simulation: {e}")
@@ -227,21 +242,74 @@ class NokkaSimulation:
                 raise
 
     def _evolve_field(self):
-        """Update the scalar field with wave propagation + Gaussian noise."""
+        """Update the scalar field via Newen vs Horror Reaction-Diffusion PDE."""
         try:
             cfg = self.config
             N = cfg.grid_size
             n3 = N * N * N
             self._phase += cfg.wave_speed
-
-            self._grid = (
-                0.8 * np.sin(self._x * 0.6 + self._phase)
-                    * np.cos(self._y * 0.4 + self._phase * 0.7)
-                + 0.3 * np.sin(self._z * 1.1 + self._frame * 0.08)
-                + np.random.normal(0, cfg.noise_std, self._grid.shape).astype(np.float32)
+            
+            # --- PDE Parameters (Newen vs Horror) ---
+            dt = 0.1                      # Integration step (Euler stability)
+            lambda_neg = 0.21             # Baseline decay (drives toward stable dim)
+            D = 0.15                      # Diffusion coefficient (spatial coupling)
+            beta = 5.0                    # Horror rejection strength
+            
+            # 1. Base input field (The geometric 'ancestral' signal)
+            theta_ancestral = (
+                0.8 * np.sin(self._x * 0.6 + self._phase) * 
+                np.cos(self._y * 0.4 + self._phase * 0.7) + 
+                0.3 * np.sin(self._z * 1.1 + self._frame * 0.08)
+            ).astype(np.float32)
+            
+            # 2. Laplacian calculation (Discrete 3D spatial coupling)
+            from scipy.ndimage import convolve
+            kernel = np.ones((3, 3, 3), dtype=np.float32) / 26.0
+            kernel[1, 1, 1] = -1.0
+            laplacian = convolve(self._grid, kernel, mode='wrap')
+            
+            # 3. Systemic Horror Rejection (Squash function)
+            H = self._grid**2
+            rejection_factor = np.exp(-beta * H)
+            
+            # 4. Total Differential Step
+            noise = np.random.normal(0, cfg.noise_std, self._grid.shape).astype(np.float32)
+            
+            dtheta = (
+                -lambda_neg * self._grid + 
+                D * laplacian + 
+                rejection_factor * (theta_ancestral - self._grid.mean()) +
+                noise
             )
+            
+            # 5. Euler Integration (Recurrence)
+            self._grid += dt * dtheta
+            self._grid = np.clip(self._grid, -2.5, 2.5) # Prevent numerical explosion
 
-            self._cumulative_ops += n3 * 12
+            # ── Quantum Shadow Injector (v2.8 - dt dinámico) ──
+            if self.quantum_injector is not None:
+                t_now = time.perf_counter()
+                dt_real_ms = (t_now - self._last_quantum_time) * 1000 if hasattr(self, '_last_quantum_time') else 60.0
+                self._last_quantum_time = t_now
+
+                gamma, gamma_est, uncertainty, n_sw = self.quantum_injector.step(dt_ms=dt_real_ms)
+
+                # Probabilistic quantum damage: low T₁ -> node collapses
+                damage_prob = self.quantum_injector.get_damage_probability()
+                quantum_damage_mask = (np.random.rand(N, N, N) < damage_prob * 0.05)
+                if np.any(quantum_damage_mask):
+                    quantum_hit = quantum_damage_mask & self._sensors_active
+                    self._sensors_active[quantum_hit] = False
+                    self._grid[quantum_hit] *= 0.05
+                    n_qdmg = int(np.sum(quantum_hit))
+                    self._total_damage_events += n_qdmg
+
+            self._cumulative_ops += N**3 * 18  # Approx ops for PDE + quantum
+
+
+
+
+
         except Exception as e:
             print(f"❌ [NokkaSimulation] Error en _evolve_field frame#{self._frame}: {e}")
             raise
@@ -421,15 +489,10 @@ class NokkaSimulation:
             active_idx = np.argwhere(self._sensors_active)
             values = self._grid[self._sensors_active]
 
-            # Compute colors via plasma colormap (vectorized)
-            t = np.clip((values - cfg.vmin) / (cfg.vmax - cfg.vmin), 0.0, 1.0)
-            idx_f = t * (len(PLASMA_STOPS) - 1)
-            lo = np.floor(idx_f).astype(int)
-            hi = np.minimum(lo + 1, len(PLASMA_STOPS) - 1)
-            frac = idx_f - lo
-
-            stops = np.array(PLASMA_STOPS, dtype=np.float32)
-            colors = stops[lo] + (stops[hi] - stops[lo]) * frac[:, np.newaxis]
+            # Compute colors via plasma colormap (vectorized LUT lookup)
+            t_col = np.clip((values - cfg.vmin) / (cfg.vmax - cfg.vmin), 0.0, 1.0)
+            idx_col = (t_col * 255).astype(np.int32)
+            colors = self._plasma_lut[idx_col]
 
             # ── Quiver vectors ──
             f = self._frame
@@ -498,6 +561,7 @@ class NokkaSimulation:
                     "ram_usage": psutil.virtual_memory().percent if psutil else 42.5,
                     "gpu_load": float(round(min(100, (total_sensors / 32768.0) * 90 + random.uniform(0, 5)), 1))
                 },
+                "quantum": self.quantum_injector.get_telemetry() if self.quantum_injector else {},
                 "status": "HEALING ACTIVADO" if self._healed_this_frame else "PROCESANDO GALÁCTICO",
             }
 
@@ -531,6 +595,10 @@ class NokkaSimulation:
                     val = float(noise_val)
                     self.config.noise_std = val
                     changed_fields.append(f"noise_std={val:.3f}")
+
+                # Quantum TLS config (v2.7)
+                if self.quantum_injector and ("tls_switch_rate" in new_config or "tls_max_factor" in new_config):
+                    self.quantum_injector.update_config(new_config)
 
                 if changed_fields:
                     print(f"⚙️  [NokkaSimulation] update_config: {' | '.join(changed_fields)}")

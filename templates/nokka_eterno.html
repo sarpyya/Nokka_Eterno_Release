@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NOKKA ETERNO v2.1 — Campo Magnético 3D + Compute Metrics</title>
+    <title>NOKKA ETERNO v2.7 — Quantum Shadow Injector</title>
     <meta name="description"
         content="Visualización interactiva 3D de campo magnético con auto-healing, bloom post-processing, y métricas de cómputo en tiempo real.">
     <link rel="stylesheet"
@@ -40,7 +40,7 @@
         <header class="main-header glass-panel">
             <div class="header-left">
                 <span class="logo">NOKKA <span class="cyan">ETERNO</span></span>
-                <span class="version">v2.5</span>
+                <span class="version">v2.7</span>
             </div>
             <div class="header-center">
                 <span class="global-status" id="global-status">SISTEMA NOMINAL</span>
@@ -56,7 +56,7 @@
         </header>
 
         <!-- ── Sidebar Left (Stats) ── -->
-        <aside class="sidebar sidebar-left">
+        <aside class="sidebar sidebar-left" tabindex="0">
             <!-- Telemetría -->
             <div class="stats-panel glass-panel">
                 <h3>📡 TELEMETRÍA</h3>
@@ -181,7 +181,7 @@
         </main>
 
         <!-- ── Sidebar Right (Command) ── -->
-        <aside class="sidebar sidebar-right">
+        <aside class="sidebar sidebar-right" tabindex="0">
             <!-- Controles -->
             <div class="controls-panel glass-panel">
                 <h3>🕹️ CONTROLES</h3>
@@ -271,8 +271,65 @@
                 </div>
             </div>
 
+            <!-- ── Quantum Shadows (v2.7) ── -->
+            <div class="glass-panel" id="quantum-panel">
+                <h3>⚛️ QUANTUM SHADOWS</h3>
+                <div style="padding: 8px 12px;">
+                    <!-- T₁ Telemetry -->
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">
+                        <div class="cmp-block" style="padding:4px 2px; background: rgba(255,77,136,0.05); border: 1px solid rgba(255,77,136,0.15);">
+                            <div class="cmp-value" id="qt-t1-avg" style="font-size:16px;color:#ff4d88;">0.17</div>
+                            <div class="cmp-label" style="font-size:7px;">T₁ AVG (ms)</div>
+                        </div>
+                        <div class="cmp-block" style="padding:4px 2px; background: rgba(255,77,77,0.05); border: 1px solid rgba(255,77,77,0.15);">
+                            <div class="cmp-value" id="qt-switches" style="font-size:16px;color:#ff4d4d;">0</div>
+                            <div class="cmp-label" style="font-size:7px;">SWITCHES</div>
+                        </div>
+                    </div>
+
+                    <!-- Bayesian Uncertainty Bar -->
+                    <div style="margin-bottom:10px;">
+                        <div style="display:flex;justify-content:space-between;font-size:9px;color:#aaa;margin-bottom:3px;">
+                            <span>Bayesian Uncertainty</span>
+                            <span id="qt-uncertainty-val" style="color:#c77dff;">0.050</span>
+                        </div>
+                        <div style="height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;border:1px solid rgba(199,125,255,0.2);">
+                            <div id="qt-uncertainty-bar" style="width:50%;height:100%;background:linear-gradient(90deg,#c77dff,#ff4d88);box-shadow:0 0 10px rgba(199,125,255,0.3);transition:width 0.3s;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Robustness Score -->
+                    <div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:10px;">
+                        <span style="color:#aaa;">Quantum Robustness</span>
+                        <span id="qt-robustness" style="color:#00ffd5;font-weight:700;">100%</span>
+                    </div>
+
+                    <!-- T₁ Trace Canvas -->
+                    <canvas id="qt-trace-canvas" width="220" height="50"
+                        style="width:100%;height:50px;border-radius:6px;background:rgba(0,0,0,0.4);
+                               border:1px solid rgba(255,77,136,0.15);display:block;margin-bottom:10px;">
+                    </canvas>
+
+                    <!-- TLS Sliders -->
+                    <div class="slider-group" style="margin-bottom:6px;">
+                        <div class="slider-header">
+                            <span class="slider-label" style="font-size:9px;">TLS Switch Rate</span>
+                            <span class="slider-value" id="val-tls-rate" style="font-size:9px;">0.10 Hz</span>
+                        </div>
+                        <input type="range" id="sld-tls-rate" min="0.01" max="10" value="0.10" step="0.01" class="nokka-slider">
+                    </div>
+                    <div class="slider-group">
+                        <div class="slider-header">
+                            <span class="slider-label" style="font-size:9px;">Max Fluctuation</span>
+                            <span class="slider-value" id="val-tls-factor" style="font-size:9px;">×10.0</span>
+                        </div>
+                        <input type="range" id="sld-tls-factor" min="3" max="15" value="10" step="0.5" class="nokka-slider">
+                    </div>
+                </div>
+            </div>
+
             <!-- ── YouTube Audio Reactor ── -->
-            <div class="glass-panel" id="yt-audio-panel" style="margin-top:12px;">
+            <div class="glass-panel" id="yt-audio-panel">
                 <h3 style="color:#ff4d88;margin-bottom:8px;">🎵 AUDIO REACTOR</h3>
 
                 <!-- Input URL YouTube -->

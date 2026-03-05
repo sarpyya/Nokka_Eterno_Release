@@ -5,12 +5,16 @@ import time
 def loocv_fast(X, y, alpha=100.0):
     """Fast analytic LOOCV for Kernel Ridge."""
     N = len(y)
-    K = X @ X.T
-    C = K + alpha * np.eye(N)
-    C_inv = np.linalg.inv(C)
-    errors_loo = (C_inv @ y) / np.diag(C_inv)
-    y_pred_loocv = y - errors_loo
-    return (y_pred_loocv >= 0.5).astype(int)
+    try:
+        K = X @ X.T
+        C = K + alpha * np.eye(N)
+        C_inv = np.linalg.inv(C)
+        errors_loo = (C_inv @ y) / np.diag(C_inv)
+        y_pred_loocv = y - errors_loo
+        return (y_pred_loocv >= 0.5).astype(int)
+    except np.linalg.LinAlgError:
+        print("⚠️  [loocv_fast] Singular matrix encountered. Returning zeros fallback.")
+        return np.zeros(N, dtype=int)
 
 def run_rc_validation(n_samples=1000, grid_size=12, progress_cb=None):
     """Runs a full vectorized RC validation suite and returns metrics."""
@@ -50,12 +54,40 @@ def run_rc_validation(n_samples=1000, grid_size=12, progress_cb=None):
                                  np.arange(N,dtype=np.float32),
                                  np.arange(N,dtype=np.float32), indexing='ij')
 
+    from scipy.ndimage import convolve
+    kernel = np.ones((3, 3, 3), dtype=np.float32) / 26.0
+    kernel[1, 1, 1] = -1.0
+    kernel_4d = kernel.reshape(1, 3, 3, 3)
+    
+    dt = 0.1
+    lambda_neg = 0.21
+    D = 0.15
+    beta = 5.0
+
     history = []
     for t in range(transient + 3):
         phases += 0.15
-        term1 = 0.8 * np.sin(x*0.6 + phases) * np.cos(y_coord*0.4 + phases*0.7)
-        term2 = 0.3 * np.sin(z*1.1 + t*0.08)
-        grids[:] = term1 + term2 + np.random.normal(0, 0.08, grids.shape).astype(np.float32)
+        noise = np.random.normal(0, 0.08, grids.shape).astype(np.float32)
+        
+        theta_ancestral = (
+            0.8 * np.sin(x*0.6 + phases) * np.cos(y_coord*0.4 + phases*0.7) +
+            0.3 * np.sin(z*1.1 + t*0.08)
+        ).astype(np.float32)
+        
+        laplacian = convolve(grids, kernel_4d, mode='wrap')
+        H = grids**2
+        rejection_factor = np.exp(-beta * H)
+        means = grids.mean(axis=(1,2,3), keepdims=True)
+        
+        dtheta = (
+            -lambda_neg * grids + 
+            D * laplacian + 
+            rejection_factor * (theta_ancestral - means) +
+            noise
+        )
+        
+        grids += dt * dtheta
+        grids = np.clip(grids, -2.5, 2.5)
         
         if t >= transient:
             history.append(grids.reshape(n_samples, -1).copy())

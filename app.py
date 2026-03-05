@@ -253,6 +253,17 @@ def handle_update_config(data):
     except Exception as e:
         print(f"❌ [Nokka] Error en handle_update_config: {e}")
 
+# ── Quantum TLS Config (v2.7) ─────────────
+@socketio.on('nokka_update_quantum')
+def handle_update_quantum(data):
+    try:
+        if not data:
+            return
+        _nokka_sim.update_config(data)
+        print(f"⚛️  [Nokka] Quantum config recibido: {data}")
+    except Exception as e:
+        print(f"❌ [Nokka] Error en handle_update_quantum: {e}")
+
 # ── Audio Inject (YouTube Reactor) ────────
 @socketio.on('nokka_audio_inject')
 def handle_audio_inject(data):
@@ -361,4 +372,4 @@ if __name__ == '__main__':
     print("🌌 NOKKA ETERNO STANDALONE ACTIVADO")
     print("📍 URL: http://localhost:5000/nokka")
     print("=" * 60)
-    socketio.run(app, host='0.0.0.0', port=5000, debug=DEBUG_MODE, use_reloader=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=DEBUG_MODE, use_reloader=False, allow_unsafe_werkzeug=True)

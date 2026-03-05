@@ -11,15 +11,19 @@ N_SAMPLES = 1000
 # ── LOOCV Analítico para Kernel Ridge ──
 def loocv_fast(X, y, alpha=1.0):
     N = len(y)
-    K = X @ X.T
-    C = K + alpha * np.eye(N)
-    C_inv = np.linalg.inv(C)
-    
-    # y - y_hat_loo = (C_inv @ y) / diag(C_inv)
-    errors_loo = (C_inv @ y) / np.diag(C_inv)
-    y_pred_loocv = y - errors_loo
-    
-    return (y_pred_loocv >= 0.5).astype(int)
+    try:
+        K = X @ X.T
+        C = K + alpha * np.eye(N)
+        C_inv = np.linalg.inv(C)
+        
+        # y - y_hat_loo = (C_inv @ y) / diag(C_inv)
+        errors_loo = (C_inv @ y) / np.diag(C_inv)
+        y_pred_loocv = y - errors_loo
+        
+        return (y_pred_loocv >= 0.5).astype(int)
+    except np.linalg.LinAlgError:
+        print("⚠️  [loocv_fast] Singular matrix encountered. Returning zeros fallback.")
+        return np.zeros(N, dtype=int)
 
 # ── Generación de Dataset Vectorizado ──
 def generate_dataset_batch(n=1000):
@@ -80,7 +84,16 @@ def test_vectorized_generalization():
                                  np.arange(N,dtype=np.float32), indexing='ij')
 
     # 2. Simulación en Batch (Evolución de campo)
-    print("  Evolucionando reservorio en paralelo (1000 muestras)...")
+    print("  Evolucionando reservorio en paralelo (1000 muestras) con NEWEN PDE...")
+    
+    from scipy.ndimage import convolve
+    kernel = np.ones((3, 3, 3), dtype=np.float32) / 26.0
+    kernel[1, 1, 1] = -1.0
+    
+    dt = 0.1
+    lambda_neg = 0.21
+    D = 0.15
+    beta = 5.0
     
     history_frames = []
     
@@ -88,10 +101,34 @@ def test_vectorized_generalization():
         phases += 0.15
         noise = np.random.normal(0, 0.08, grids.shape).astype(np.float32)
         
-        # grids[:] = 0.8 * sin(x*0.6 + phase) * cos(y*0.4 + phase*0.7) + 0.3 * sin(z*1.1 + t*0.08)
-        term1 = 0.8 * np.sin(x*0.6 + phases) * np.cos(y_coord*0.4 + phases*0.7)
-        term2 = 0.3 * np.sin(z*1.1 + t*0.08)
-        grids[:] = term1 + term2 + noise
+        # 1. Base input field (The geometric 'ancestral' signal)
+        theta_ancestral = (
+            0.8 * np.sin(x*0.6 + phases) * np.cos(y_coord*0.4 + phases*0.7) +
+            0.3 * np.sin(z*1.1 + t*0.08)
+        ).astype(np.float32)
+        
+        # 2. Laplacian calculation (Batch 4D but applied per sample, or vectorized over 4D if kernel matches)
+        # Note: convolve across (Samples, Z, Y, X). Kernel needs to be (1, 3, 3, 3) to not mix samples
+        kernel_4d = kernel.reshape(1, 3, 3, 3)
+        laplacian = convolve(grids, kernel_4d, mode='wrap')
+        
+        # 3. Systemic Horror Rejection (Squash function)
+        H = grids**2
+        rejection_factor = np.exp(-beta * H)
+        
+        # 4. Total Differential Step
+        # To avoid massive memory spike, do mean across spatial dims (axis=1,2,3) kept as (N,1,1,1)
+        means = grids.mean(axis=(1,2,3), keepdims=True)
+        dtheta = (
+            -lambda_neg * grids + 
+            D * laplacian + 
+            rejection_factor * (theta_ancestral - means) +
+            noise
+        )
+        
+        # 5. Euler Integration (Recurrence)
+        grids += dt * dtheta
+        grids = np.clip(grids, -2.5, 2.5) # Prevent numerical explosion
         
         if t >= TRANSIENT:
             history_frames.append(grids.reshape(N_SAMPLES, -1).copy())

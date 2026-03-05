@@ -1321,6 +1321,9 @@ const NokkaSocket = (() => {
                 }
                 if (els.bar) els.bar.style.width = con.load_pct + '%';
             }
+
+            // Quantum Shadows (v2.7)
+            if (data.quantum) NokkaQuantum.update(data.quantum);
         });
 
         // ── Slider Event Listeners ──────────────────────────
@@ -1792,6 +1795,133 @@ window.NokkaValidator = NokkaValidator;
 
 
 // ═══════════════════════════════════════════════════════════════
+// ⚛️ MODULE: Quantum Shadows (v2.7)
+// ═══════════════════════════════════════════════════════════════
+
+const NokkaQuantum = (() => {
+    const els = {
+        t1Avg:          document.getElementById('qt-t1-avg'),
+        switches:       document.getElementById('qt-switches'),
+        uncertaintyVal: document.getElementById('qt-uncertainty-val'),
+        uncertaintyBar: document.getElementById('qt-uncertainty-bar'),
+        robustness:     document.getElementById('qt-robustness'),
+        traceCanvas:    document.getElementById('qt-trace-canvas'),
+    };
+
+    let _traceCtx = null;
+    let _lastTrace = [];
+
+    function initSliders() {
+        const sldRate   = document.getElementById('sld-tls-rate');
+        const sldFactor = document.getElementById('sld-tls-factor');
+        const valRate   = document.getElementById('val-tls-rate');
+        const valFactor = document.getElementById('val-tls-factor');
+
+        const emitQuantum = () => {
+            if (window._nokkaSocket) {
+                window._nokkaSocket.emit('nokka_update_quantum', {
+                    tls_switch_rate: parseFloat(sldRate?.value || 0.1),
+                    tls_max_factor:  parseFloat(sldFactor?.value || 10),
+                });
+            }
+        };
+
+        if (sldRate) sldRate.addEventListener('input', () => {
+            if (valRate) valRate.innerText = parseFloat(sldRate.value).toFixed(2) + ' Hz';
+            emitQuantum();
+        });
+        if (sldFactor) sldFactor.addEventListener('input', () => {
+            if (valFactor) valFactor.innerText = '×' + parseFloat(sldFactor.value).toFixed(1);
+            emitQuantum();
+        });
+    }
+
+    function update(quantumData) {
+        if (!quantumData || !quantumData.t1_avg_ms) return;
+
+        const q = quantumData;
+
+        // HUD values
+        if (els.t1Avg)          els.t1Avg.textContent          = q.t1_avg_ms.toFixed(3);
+        if (els.switches)       els.switches.textContent       = q.switches_frame;
+        if (els.uncertaintyVal) els.uncertaintyVal.textContent  = q.uncertainty.toFixed(4);
+        if (els.robustness)     els.robustness.textContent     = (q.robustness * 100).toFixed(1) + '%';
+
+        // Uncertainty bar (clamp to 0-100%)
+        if (els.uncertaintyBar) {
+            const pct = Math.min(100, q.uncertainty * 2000); // scale for visual
+            els.uncertaintyBar.style.width = pct + '%';
+        }
+
+        // Switches flash red when ×10 event
+        if (els.switches && q.switches_frame > 0) {
+            els.switches.style.textShadow = '0 0 12px rgba(255,77,77,0.8)';
+            setTimeout(() => { if (els.switches) els.switches.style.textShadow = 'none'; }, 200);
+        }
+
+        // T₁ Trace
+        if (q.t1_trace) {
+            _lastTrace = q.t1_trace;
+            _drawTrace();
+        }
+    }
+
+    function _drawTrace() {
+        if (!els.traceCanvas) return;
+        if (!_traceCtx) _traceCtx = els.traceCanvas.getContext('2d');
+        const ctx = _traceCtx;
+        const W = els.traceCanvas.width;
+        const H = els.traceCanvas.height;
+        const data = _lastTrace;
+        if (data.length < 2) return;
+
+        ctx.fillStyle = 'rgba(5,5,20,0.6)';
+        ctx.fillRect(0, 0, W, H);
+
+        // Find y range
+        let yMin = Infinity, yMax = -Infinity;
+        for (const v of data) { if (v < yMin) yMin = v; if (v > yMax) yMax = v; }
+        const yRange = Math.max(yMax - yMin, 0.001);
+
+        // Draw line
+        ctx.strokeStyle = '#ff4d88';
+        ctx.lineWidth = 1.5;
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = 'rgba(255,77,136,0.5)';
+        ctx.beginPath();
+        for (let i = 0; i < data.length; i++) {
+            const x = (i / (data.length - 1)) * W;
+            const y = H - ((data[i] - yMin) / yRange) * (H - 6) - 3;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Base line
+        const baseY = H - ((0.17 - yMin) / yRange) * (H - 6) - 3;
+        if (baseY > 0 && baseY < H) {
+            ctx.setLineDash([3, 3]);
+            ctx.strokeStyle = 'rgba(0,255,213,0.25)';
+            ctx.lineWidth = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(0, baseY);
+            ctx.lineTo(W, baseY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Label
+        ctx.fillStyle = 'rgba(255,77,136,0.6)';
+        ctx.font = '8px JetBrains Mono';
+        ctx.fillText('T₁ trace (center node)', 4, 10);
+    }
+
+    return { update, initSliders };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════
 // 🚀 BOOT
 // ═══════════════════════════════════════════════════════════════
 
@@ -1830,6 +1960,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     NokkaManager.init(); // Auto-switch basado en hardware
     NokkaControls.init();
+    NokkaQuantum.initSliders();  // v2.7 Quantum TLS sliders
     NokkaSocket.connect();
 
     setTimeout(hideLoading, 800);
